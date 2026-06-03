@@ -207,22 +207,49 @@ async function ensureDriveFolder(){
   return folder.id;
 }
 
-// List all JSON files in ScriptBreaker folder
+// List all JSON files in ScriptBreaker folder (own + shared with me)
 async function listDriveFiles(){
   if(!_driveToken) return [];
+
+  // 1. Get own ScriptBreaker folder files
   const folderId = _driveFolderId || await ensureDriveFolder();
   _driveFolderId = folderId;
-  const q = encodeURIComponent(`'${folderId}' in parents and mimeType='application/json' and trashed=false`);
-  const r = await fetch(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,modifiedTime,size)&orderBy=modifiedTime+desc`, {
+  const q1 = encodeURIComponent("'" + folderId + "' in parents and mimeType='application/json' and trashed=false");
+  const r1 = await fetch('https://www.googleapis.com/drive/v3/files?q=' + q1 + '&fields=files(id,name,modifiedTime,size,owners,shared)&orderBy=modifiedTime+desc', {
     headers: { Authorization: 'Bearer ' + _driveToken }
   });
-  const data = await r.json();
-  return data.files || [];
+  const d1 = await r1.json();
+  const ownFiles = d1.files || [];
+
+  // 2. Get JSON files in shared ScriptBreaker folders
+  // Find all ScriptBreaker folders shared with me
+  const q2 = encodeURIComponent("name='ScriptBreaker' and mimeType='application/vnd.google-apps.folder' and trashed=false and sharedWithMe=true");
+  const r2 = await fetch('https://www.googleapis.com/drive/v3/files?q=' + q2 + '&fields=files(id,name)&includeItemsFromAllDrives=true&supportsAllDrives=true', {
+    headers: { Authorization: 'Bearer ' + _driveToken }
+  });
+  const d2 = await r2.json();
+  const sharedFolders = d2.files || [];
+
+  // 3. Get files from each shared folder
+  let sharedFiles = [];
+  for(const folder of sharedFolders){
+    const q3 = encodeURIComponent("'" + folder.id + "' in parents and mimeType='application/json' and trashed=false");
+    const r3 = await fetch('https://www.googleapis.com/drive/v3/files?q=' + q3 + '&fields=files(id,name,modifiedTime,size)&orderBy=modifiedTime+desc&includeItemsFromAllDrives=true&supportsAllDrives=true', {
+      headers: { Authorization: 'Bearer ' + _driveToken }
+    });
+    const d3 = await r3.json();
+    sharedFiles = sharedFiles.concat(d3.files || []);
+  }
+
+  // Merge, deduplicate by id, sort by modifiedTime desc
+  const allMap = {};
+  [...ownFiles, ...sharedFiles].forEach(f => { allMap[f.id] = f; });
+  return Object.values(allMap).sort((a,b) => new Date(b.modifiedTime) - new Date(a.modifiedTime));
 }
 
-// Read a JSON file from Drive
+// Read a JSON file from Drive (own or shared)
 async function readDriveFile(fileId){
-  const r = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+  const r = await fetch('https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media&supportsAllDrives=true', {
     headers: { Authorization: 'Bearer ' + _driveToken }
   });
   return await r.json();
@@ -3216,7 +3243,7 @@ function DrivePanel({ onImport, onClose, lang }) {
             <>
               <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
                 <div style={{fontFamily:"'Geist Mono',monospace",fontSize:9,color:T.textDim,letterSpacing:'0.1em'}}>
-                  SCRIPTBREAKER FOLDER  -  {files.length} FILES
+                  SCRIPTBREAKER  -  {files.length} FILES (incl. shared)
                 </div>
                 <button onClick={loadFiles} style={{fontSize:10,color:T.info,padding:'2px 8px',
                   border:`1px solid ${T.info}44`,borderRadius:4}}>Refresh</button>
