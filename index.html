@@ -145,7 +145,7 @@ function saveAll(ps){ localStorage.setItem(LS,JSON.stringify(ps)) }
    Client ID: 145572665951-pe6ka3u15qb26kgb397cm7b1a8hl9cac.apps.googleusercontent.com
 ═══════════════════════════════════════════════════════════ */
 const GDRIVE_CLIENT_ID = '145572665951-pe6ka3u15qb26kgb397cm7b1a8hl9cac.apps.googleusercontent.com';
-const GDRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+const GDRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
 const GDRIVE_FOLDER_NAME = 'ScriptBreaker';
 
 // Drive auth state
@@ -207,41 +207,44 @@ async function ensureDriveFolder(){
   return folder.id;
 }
 
-// List all JSON files in ScriptBreaker folder (own + shared with me)
+// List all JSON files in ScriptBreaker folder (own + shared)
 async function listDriveFiles(){
   if(!_driveToken) return [];
 
-  // 1. Get own ScriptBreaker folder files
+  // 1. Own ScriptBreaker folder
   const folderId = _driveFolderId || await ensureDriveFolder();
   _driveFolderId = folderId;
   const q1 = encodeURIComponent("'" + folderId + "' in parents and mimeType='application/json' and trashed=false");
-  const r1 = await fetch('https://www.googleapis.com/drive/v3/files?q=' + q1 + '&fields=files(id,name,modifiedTime,size,owners,shared)&orderBy=modifiedTime+desc', {
+  const r1 = await fetch('https://www.googleapis.com/drive/v3/files?q=' + q1 + '&fields=files(id,name,modifiedTime,size)&orderBy=modifiedTime+desc', {
     headers: { Authorization: 'Bearer ' + _driveToken }
   });
   const d1 = await r1.json();
   const ownFiles = d1.files || [];
 
-  // 2. Get JSON files in shared ScriptBreaker folders
-  // Find all ScriptBreaker folders shared with me
-  const q2 = encodeURIComponent("name='ScriptBreaker' and mimeType='application/vnd.google-apps.folder' and trashed=false and sharedWithMe=true");
-  const r2 = await fetch('https://www.googleapis.com/drive/v3/files?q=' + q2 + '&fields=files(id,name)&includeItemsFromAllDrives=true&supportsAllDrives=true', {
+  // 2. Find ALL ScriptBreaker folders accessible (shared or owned)
+  // Use broad search without sharedWithMe filter to catch all cases
+  const q2 = encodeURIComponent("name='ScriptBreaker' and mimeType='application/vnd.google-apps.folder' and trashed=false");
+  const r2 = await fetch('https://www.googleapis.com/drive/v3/files?q=' + q2 + '&fields=files(id,name)&includeItemsFromAllDrives=true&supportsAllDrives=true&corpora=allDrives', {
     headers: { Authorization: 'Bearer ' + _driveToken }
   });
   const d2 = await r2.json();
-  const sharedFolders = d2.files || [];
+  // Filter out own folder to avoid duplicates
+  const otherFolders = (d2.files || []).filter(f => f.id !== folderId);
 
-  // 3. Get files from each shared folder
+  // 3. Get JSON files from each other ScriptBreaker folder
   let sharedFiles = [];
-  for(const folder of sharedFolders){
-    const q3 = encodeURIComponent("'" + folder.id + "' in parents and mimeType='application/json' and trashed=false");
-    const r3 = await fetch('https://www.googleapis.com/drive/v3/files?q=' + q3 + '&fields=files(id,name,modifiedTime,size)&orderBy=modifiedTime+desc&includeItemsFromAllDrives=true&supportsAllDrives=true', {
-      headers: { Authorization: 'Bearer ' + _driveToken }
-    });
-    const d3 = await r3.json();
-    sharedFiles = sharedFiles.concat(d3.files || []);
+  for(const folder of otherFolders){
+    try {
+      const q3 = encodeURIComponent("'" + folder.id + "' in parents and mimeType='application/json' and trashed=false");
+      const r3 = await fetch('https://www.googleapis.com/drive/v3/files?q=' + q3 + '&fields=files(id,name,modifiedTime,size)&orderBy=modifiedTime+desc&includeItemsFromAllDrives=true&supportsAllDrives=true', {
+        headers: { Authorization: 'Bearer ' + _driveToken }
+      });
+      const d3 = await r3.json();
+      sharedFiles = sharedFiles.concat(d3.files || []);
+    } catch(e) {}
   }
 
-  // Merge, deduplicate by id, sort by modifiedTime desc
+  // Deduplicate by id, sort newest first
   const allMap = {};
   [...ownFiles, ...sharedFiles].forEach(f => { allMap[f.id] = f; });
   return Object.values(allMap).sort((a,b) => new Date(b.modifiedTime) - new Date(a.modifiedTime));
