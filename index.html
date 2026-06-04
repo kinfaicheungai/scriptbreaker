@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
 <title>New Script Breaker</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
@@ -3640,7 +3640,7 @@ function Shell({initProj,onBack,lang,setLang,dark,setDark}){
   return(
     <LangCtx.Provider value={lang}>
       <Ctx.Provider value={{proj,updateProj}}>
-        <div style={{display:'flex',height:'100vh',overflow:'hidden',background:T.bg,flexDirection:mob?'column':'row'}}>
+        <div style={{display:'flex',height:mob?'100dvh':'100vh',overflow:'hidden',background:T.bg,flexDirection:mob?'column':'row'}}>
 
           {/* Sidebar - desktop only */}
           {!mob&&<div style={{width:236,flexShrink:0,background:T.panel,borderRight:`1px solid ${T.border}`,display:'flex',flexDirection:'column'}}>
@@ -3714,7 +3714,8 @@ function Shell({initProj,onBack,lang,setLang,dark,setDark}){
 
           {/* Mobile bottom nav */}
           {mob&&<div style={{flexShrink:0,background:T.panel,borderTop:`1px solid ${T.border}`,
-            display:'flex',padding:'6px 0',paddingBottom:'max(6px,env(safe-area-inset-bottom))',zIndex:100}}>
+            display:'flex',padding:'6px 0',paddingBottom:'calc(env(safe-area-inset-bottom) + 8px)',
+            zIndex:1000,position:'relative'}}>
             {VIEWS.map(v=>(
               <button key={v.id} onClick={()=>setView(v.id)}
                 style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:2,
@@ -3742,11 +3743,14 @@ function Shell({initProj,onBack,lang,setLang,dark,setDark}){
    MOBILE DETECTION HOOK
 ═══════════════════════════════════════════════════════════ */
 function useMobile(){ 
-  const [mob,setMob]=React.useState(window.innerWidth<=768);
+  const isMob=()=>window.innerWidth<=900||/iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+  const [mob,setMob]=React.useState(isMob);
   React.useEffect(()=>{
-    const fn=()=>setMob(window.innerWidth<=768);
+    const fn=()=>setMob(isMob());
     window.addEventListener('resize',fn);
-    return ()=>window.removeEventListener('resize',fn);
+    // Also fire on orientation change
+    window.addEventListener('orientationchange',fn);
+    return ()=>{ window.removeEventListener('resize',fn); window.removeEventListener('orientationchange',fn); };
   },[]);
   return mob;
 }
