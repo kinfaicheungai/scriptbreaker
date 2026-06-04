@@ -27,6 +27,22 @@ input,textarea,select{font:inherit;color:inherit;background:none;border:none;out
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 <!-- Google Identity Services -->
 <script src="https://accounts.google.com/gsi/client" async defer></script>
+<style>
+/* Mobile responsive utilities */
+@media (max-width: 768px) {
+  .desktop-only { display: none !important; }
+  .mobile-only { display: flex !important; }
+}
+@media (min-width: 769px) {
+  .mobile-only { display: none !important; }
+}
+@keyframes pulse {
+  0%,100% { opacity:1; } 50% { opacity:0.4; }
+}
+@keyframes spin {
+  from { transform: rotate(0deg); } to { transform: rotate(360deg); }
+}
+</style>
 </head>
 <body>
 <div id="root"></div>
@@ -535,7 +551,8 @@ function ShotCard(props) {
 }
 
 function ShotBoard(){
-  const {proj,updateProj}=useProj(); const t=useT();
+  const {proj,updateProj}=useProj();
+  const mob=useMobile(); const t=useT();
 
   const [filterLoc,setFilterLoc]=useState('all');
   const [filterAct,setFilterAct]=useState('all');
@@ -639,6 +656,7 @@ function ShotBoard(){
 
 function BDView(){
   const {proj,updateProj}=useProj();
+  const mob=useMobile();
   function RefImage(riProps) {
     var images = riProps.images || [];
     var onAdd = riProps.onAdd;
@@ -776,7 +794,7 @@ function BDView(){
       <div style={{flex:1,overflow:'hidden',display:'flex'}}>
 
         {tab==='locations'&&<>
-          <div style={{width:bdLeftWidth,flexShrink:0,overflow:'auto',padding:'8px 0'}}>
+          <div style={{width:mob?'100%':bdLeftWidth,flexShrink:0,overflow:'auto',padding:'8px 0',display:mob&&selLoc?'none':'block'}}>
             <button onClick={()=>setSelLoc('__all')} style={{width:'100%',padding:'9px 14px',textAlign:'left',background:selLoc==='__all'?T.chip:'transparent',fontSize:13,color:selLoc==='__all'?T.text:T.textMute,borderBottom:`1px solid ${T.rule}`,marginBottom:4}}>
               All locations <span style={{float:'right',fontFamily:"'Geist Mono',monospace",fontSize:10,color:T.textDim}}>{proj.scenes?.length}</span>
             </button>
@@ -792,13 +810,13 @@ function BDView(){
             ))}
           </div>
 
-          {/* BD Resize handle */}
-          <div onMouseDown={onBdResizeStart}
+          {/* BD Resize handle - desktop only */}
+          {!mob&&<div onMouseDown={onBdResizeStart}
             style={{width:5,flexShrink:0,cursor:'col-resize',background:'transparent',borderRight:`1px solid ${T.border}`,position:'relative',zIndex:10,transition:'background 0.15s'}}
             onMouseEnter={e=>{e.currentTarget.style.background=T.accent+'44';}}
             onMouseLeave={e=>{e.currentTarget.style.background='transparent';}}>
             <div style={{position:'absolute',top:'50%',left:'50%',transform:'translate(-50%,-50%)',width:3,height:32,borderRadius:2,background:T.border,opacity:0.7}}/>
-          </div>
+          </div>}
           <div style={{flex:1,overflow:'auto',padding:24}}>
             {selLoc==='__all'?(
               <div style={{display:'grid',gap:12}}>
@@ -816,7 +834,8 @@ function BDView(){
                 <div style={{marginBottom:18}}>
                   <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:8}}>
                     <div style={{width:10,height:10,borderRadius:'50%',background:sg.loc.color}}/>
-                    <div style={{fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:26,color:T.text}}>{sg.loc.name}</div>
+                    {mob&&<button onClick={()=>setSelLoc(null)} style={{color:T.accent,fontSize:11,fontFamily:"'Geist Mono',monospace",background:'transparent',border:'none',cursor:'pointer',padding:'0 0 8px',display:'block'}}>← Back</button>}
+                    <div style={{fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:mob?18:26,color:T.text}}>{sg.loc.name}</div>
                     <span style={{fontSize:10,fontFamily:"'Geist Mono',monospace",color:T.textDim,background:T.chip,padding:'2px 7px',borderRadius:3}}>{sg.loc.type}</span>
                   </div>
                   <div style={{background:T.panel,border:`1px solid ${T.border}`,borderRadius:8,padding:'12px 14px',marginBottom:12}}>
@@ -1678,6 +1697,8 @@ function ScheduleTab({schedule,setSchedule,startDate,setStartDate,endDate,setEnd
   dragScene,setDragScene,dragFrom,setDragFrom,
   leftWidth,onResizeStart,getScene,getLoc,getChar,dayDate,fmtDate}){
 
+  const mob=useMobile();
+  const [showPool,setShowPool]=React.useState(false);
   const [selDay,setSelDay]=React.useState(null);
   const [selScene,setSelScene]=React.useState(null);
   const [dragOverDay,setDragOverDay]=React.useState(null);
@@ -2014,12 +2035,18 @@ function ScheduleTab({schedule,setSchedule,startDate,setStartDate,endDate,setEnd
         </span>
         <button onClick={addDay} style={{padding:'3px 10px',background:T.info+'20',
           border:`1px solid ${T.info}44`,borderRadius:4,color:T.info,fontSize:10,cursor:'pointer'}}>+ Day</button>
+        {mob&&<button onClick={()=>setShowPool(p=>!p)}
+          style={{padding:'3px 10px',background:showPool?T.warn+'20':'transparent',
+            border:`1px solid ${showPool?T.warn:T.border}44`,borderRadius:4,
+            color:showPool?T.warn:T.textDim,fontSize:10,cursor:'pointer'}}>
+          {showPool?'Hide Unscheduled':schedule.unscheduled.length>0?`Unscheduled (${schedule.unscheduled.length})`:'All scheduled'}
+        </button>}
       </div>
 
-      <div style={{flex:1,overflow:'hidden',display:'flex'}}>
-        {/* LEFT: unscheduled */}
-        <div style={{width:leftWidth,flexShrink:0,display:'flex',flexDirection:'column',
-          overflow:'hidden',borderRight:`1px solid ${T.border}`}}>
+      <div style={{flex:1,overflow:'hidden',display:'flex',flexDirection:mob?'column':'row'}}>
+        {/* LEFT: unscheduled - collapsible on mobile */}
+        {(!mob||showPool)&&<div style={{width:mob?'100%':leftWidth,flexShrink:0,display:'flex',flexDirection:'column',
+          overflow:'hidden',borderRight:`1px solid ${T.border}`,maxHeight:mob?'40%':undefined}}>
           <div style={{padding:'7px 10px 4px',fontFamily:"'Geist Mono',monospace",fontSize:10,
             letterSpacing:'0.1em',flexShrink:0,
             color:schedule.unscheduled.length>0?T.warn:T.success}}>
@@ -2051,17 +2078,17 @@ function ScheduleTab({schedule,setSchedule,startDate,setStartDate,endDate,setEnd
               );
             })}
           </div>
-        </div>
+        </div>}
 
-        {/* Resize handle */}
-        <div onMouseDown={onResizeStart}
+        {/* Resize handle - desktop only */}
+        {!mob&&<div onMouseDown={onResizeStart}
           style={{width:5,flexShrink:0,cursor:'col-resize',background:'transparent',
             borderRight:`1px solid ${T.border}`,position:'relative',zIndex:10}}
           onMouseEnter={e=>{e.currentTarget.style.background=T.accent+'44';}}
           onMouseLeave={e=>{e.currentTarget.style.background='transparent';}}>
           <div style={{position:'absolute',top:'50%',left:'50%',
             transform:'translate(-50%,-50%)',width:3,height:32,borderRadius:2,background:T.border}}/>
-        </div>
+        </div>}
 
         {/* RIGHT: detail on top, calendar below */}
         <div style={{flex:1,overflow:'hidden',display:'flex',flexDirection:'column'}}>
@@ -2117,6 +2144,7 @@ function ScheduleTab({schedule,setSchedule,startDate,setStartDate,endDate,setEnd
    CALL SHEET TAB
 ═══════════════════════════════════════════════════════════ */
 function CallSheetTab({schedule,dayNumbers,getScene,getLoc,getChar,dayDate,fmtDate}){
+  const mob=useMobile();
   const {proj}=useProj();
   const [selDay,setSelDay]=React.useState(dayNumbers[0]||null);
   const [callSheets,setCallSheets]=React.useState(()=>{
@@ -2142,9 +2170,9 @@ function CallSheetTab({schedule,dayNumbers,getScene,getLoc,getChar,dayDate,fmtDa
   const CREW_ROLES=['Director','DOP','1st AC','2nd AC','Gaffer','Key Grip','Sound Mixer','Boom Op','Wardrobe','Makeup','Script Sup.','PA'];
 
   return(
-    <div style={{flex:1,overflow:'hidden',display:'flex'}}>
+    <div style={{flex:1,overflow:'hidden',display:'flex',flexDirection:mob?'column':'row'}}>
       {/* Day nav */}
-      <div style={{width:78,flexShrink:0,borderRight:`1px solid ${T.border}`,overflow:'auto',padding:'4px 0',background:T.panel}}>
+      <div style={{width:mob?'100%':78,flexShrink:0,borderRight:mob?'none':`1px solid ${T.border}`,borderBottom:mob?`1px solid ${T.border}`:'none',overflow:'auto',padding:mob?'4px':'4px 0',background:T.panel,display:'flex',flexDirection:mob?'row':'column'}}>
         {dayNumbers.map(dayNum=>{
           const d=schedule.days[dayNum];
           const dt2=dayDate(dayNum);
@@ -2169,7 +2197,7 @@ function CallSheetTab({schedule,dayNumbers,getScene,getLoc,getChar,dayDate,fmtDa
       </div>
 
       {selDay&&dayData?(
-        <div style={{flex:1,overflow:'auto',padding:'14px 18px'}}>
+        <div style={{flex:1,overflow:'auto',padding:mob?'10px 10px':'14px 18px'}}>
           {/* Header */}
           <div style={{background:T.panel,border:`1px solid ${T.border}`,borderRadius:10,
             padding:'14px 18px',marginBottom:12,display:'flex',flexWrap:'wrap',gap:14,alignItems:'flex-start'}}>
@@ -2273,7 +2301,7 @@ function CallSheetTab({schedule,dayNumbers,getScene,getLoc,getChar,dayDate,fmtDa
           {/* Crew */}
           <div style={{background:T.panel,border:`1px solid ${T.border}`,borderRadius:8,padding:'10px 12px',marginBottom:10}}>
             <div style={{fontFamily:"'Geist Mono',monospace",fontSize:10,color:T.textDim,letterSpacing:'0.1em',marginBottom:8}}>CREW · TALENT</div>
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:'5px 10px'}}>
+            <div style={{display:'grid',gridTemplateColumns:mob?'1fr 1fr':'1fr 1fr 1fr 1fr',gap:'5px 10px'}}>
               {CREW_ROLES.map(role=>{
                 const entry=(sheet.crew||[]).find(c=>c.role===role)||{role,name:'',callTime:''};
                 return(
@@ -2437,9 +2465,9 @@ function ChecklistTab({schedule,dayNumbers,getScene,getLoc,getChar,dayDate,fmtDa
   const CAT_ICONS={'CAST':'👤','PROPS':'🎭','COSTUME':'👗','MAKEUP':'💄','LOCATIONS':'📍','EQUIPMENT':'🎬'};
 
   return(
-    <div style={{flex:1,overflow:'hidden',display:'flex'}}>
+    <div style={{flex:1,overflow:'hidden',display:'flex',flexDirection:mob?'column':'row'}}>
       {/* Day nav */}
-      <div style={{width:78,flexShrink:0,borderRight:`1px solid ${T.border}`,overflow:'auto',padding:'4px 0',background:T.panel}}>
+      <div style={{width:mob?'100%':78,flexShrink:0,borderRight:mob?'none':`1px solid ${T.border}`,borderBottom:mob?`1px solid ${T.border}`:'none',overflow:'auto',padding:mob?'4px':'4px 0',background:T.panel,display:'flex',flexDirection:mob?'row':'column'}}>
         {dayNumbers.map(dayNum=>{
           const d=schedule.days[dayNum];
           const dt2=dayDate(dayNum);
@@ -2612,6 +2640,7 @@ function ChecklistTab({schedule,dayNumbers,getScene,getLoc,getChar,dayDate,fmtDa
 
 function DashView(){
   const {proj}=useProj(); const t=useT();
+  const mob=useMobile();
   const p=proj.project||{};
   const allProps=[...new Set(proj.scenes?.flatMap(s=>s.props?.map(pr=>pr.name)||[])||[])];
   const critProps=[...new Set(proj.scenes?.flatMap(s=>s.props?.filter(pr=>pr.critical).map(pr=>pr.name)||[])||[])];
@@ -2720,7 +2749,8 @@ function DashView(){
    SCRIPT VIEW  -  proper screenplay formatting
 ═══════════════════════════════════════════════════════════ */
 function ScriptView(){
-  const {proj}=useProj(); const t=useT();
+  const {proj}=useProj();
+  const mob=useMobile(); const t=useT();
   const [search,setSearch]=useState('');
   const [selScene,setSelScene]=useState(null);
   const bodyRefs=useRef({});
@@ -3481,10 +3511,11 @@ function Cabinet({onOpen,lang,setLang,dark,setDark}){
 
   const totalShots=p=>p.scenes?.reduce((a,s)=>a+(s.shots?.length||0),0)||0;
 
+  const mob=useMobile();
   return(
-    <div style={{minHeight:'100vh',background:T.bg,padding:'36px 44px'}}>
+    <div style={{minHeight:'100vh',background:T.bg,padding:mob?'16px 14px':'36px 44px'}}>
       {/* Header */}
-      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:44}}>
+      <div style={{display:'flex',alignItems:mob?'flex-start':'center',justifyContent:'space-between',marginBottom:mob?20:44,flexDirection:mob?'column':'row',gap:mob?10:0}}>
         <div style={{display:'flex',alignItems:'center',gap:12}}>
           <div style={{width:34,height:34,borderRadius:8,background:'linear-gradient(135deg,#d49a5c,#c4654b)',display:'grid',placeItems:'center',fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:18,color:'#0e0d0b'}}>N</div>
           <div>
@@ -3492,7 +3523,7 @@ function Cabinet({onOpen,lang,setLang,dark,setDark}){
             <div style={{fontFamily:"'Geist Mono',monospace",fontSize:10,color:T.textDim,letterSpacing:'0.1em',marginTop:2}}>{t.newVersion}</div>
           </div>
         </div>
-        <div style={{display:'flex',gap:8,alignItems:'center'}}>
+        <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
           {/* Language switcher */}
           {['en','zh','ja'].map(l=>(
             <button key={l} onClick={()=>setLang(l)} style={{padding:'4px 10px',borderRadius:4,fontSize:11,fontFamily:"'Geist Mono',monospace",background:lang===l?T.chip:'transparent',color:lang===l?T.text:T.textDim,border:`1px solid ${lang===l?T.border:'transparent'}`}}>
@@ -3540,7 +3571,7 @@ function Cabinet({onOpen,lang,setLang,dark,setDark}){
           <Btn onClick={()=>setShowImport(true)}>{t.importJson}</Btn>
         </div>
       ):(
-        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(300px,1fr))',gap:18}}>
+        <div style={{display:'grid',gridTemplateColumns:mob?'1fr':'repeat(auto-fill,minmax(300px,1fr))',gap:mob?12:18}}>
           {projects.map(p=>(
             <div key={p._id} onClick={()=>onOpen(p)}
               style={{background:T.panel,border:`1px solid ${T.border}`,borderRadius:12,padding:24,cursor:'pointer',transition:'border-color 0.15s,transform 0.1s',position:'relative'}}
@@ -3574,6 +3605,7 @@ function Shell({initProj,onBack,lang,setLang,dark,setDark}){
   const [proj,setProj]=useState(initProj);
   const [view,setView]=useState('dashboard');
   const [showMerge,setShowMerge]=useState(false);
+  const mob=useMobile();
 
   const updateProj=useCallback((updater)=>{
     setProj(p=>{
@@ -3608,10 +3640,10 @@ function Shell({initProj,onBack,lang,setLang,dark,setDark}){
   return(
     <LangCtx.Provider value={lang}>
       <Ctx.Provider value={{proj,updateProj}}>
-        <div style={{display:'flex',height:'100vh',overflow:'hidden',background:T.bg}}>
+        <div style={{display:'flex',height:'100vh',overflow:'hidden',background:T.bg,flexDirection:mob?'column':'row'}}>
 
-          {/* Sidebar */}
-          <div style={{width:236,flexShrink:0,background:T.panel,borderRight:`1px solid ${T.border}`,display:'flex',flexDirection:'column'}}>
+          {/* Sidebar - desktop only */}
+          {!mob&&<div style={{width:236,flexShrink:0,background:T.panel,borderRight:`1px solid ${T.border}`,display:'flex',flexDirection:'column'}}>
             <div style={{padding:'14px 16px 0'}}>
               <button onClick={onBack} style={{color:T.textDim,fontSize:10,letterSpacing:'0.12em',fontFamily:"'Geist Mono',monospace",marginBottom:12,display:'flex',alignItems:'center',gap:4}}>← {t.cabinet.toUpperCase()}</button>
               <div style={{fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:20,lineHeight:1.05,marginBottom:4,color:T.text}}>{proj.project?.title||'Untitled'}</div>
@@ -3652,12 +3684,26 @@ function Shell({initProj,onBack,lang,setLang,dark,setDark}){
             </div>
           </div>
 
+          </div>}
+
+          {/* Mobile top bar */}
+          {mob&&<div style={{flexShrink:0,background:T.panel,borderBottom:`1px solid ${T.border}`,padding:'8px 14px',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <button onClick={onBack} style={{color:T.textDim,fontSize:11,fontFamily:"'Geist Mono',monospace",background:'transparent',border:'none',cursor:'pointer'}}>← Back</button>
+              <div style={{fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:15,color:T.text,maxWidth:160,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{proj.project?.title||'Untitled'}</div>
+            </div>
+            <div style={{display:'flex',gap:6}}>
+              <button onClick={()=>setDark&&setDark(!dark)} style={{width:28,height:28,borderRadius:6,border:`1px solid ${T.border}`,display:'grid',placeItems:'center',color:T.textMute,fontSize:13}}>{dark?'☀':'🌙'}</button>
+              <DriveSaveBtn proj={proj}/>
+            </div>
+          </div>}
+
           {/* Content */}
-          <div style={{flex:1,overflow:'hidden',display:'flex',flexDirection:'column'}}>
-            <div style={{padding:'12px 24px',borderBottom:`1px solid ${T.rule}`,display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0}}>
+          <div style={{flex:1,overflow:'hidden',display:'flex',flexDirection:'column',minHeight:0}}>
+            {!mob&&<div style={{padding:'12px 24px',borderBottom:`1px solid ${T.rule}`,display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0}}>
               <div style={{fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:26,color:T.text,whiteSpace:'nowrap'}}>{VIEWS.find(v=>v.id===view)?.label}</div>
               <Mono s={{color:T.textDim,fontSize:10}}>{proj.project?.totalPages||'?'}p{proj.project?.estimatedRuntime?' · '+proj.project.estimatedRuntime:''}</Mono>
-            </div>
+            </div>}
             <div style={{flex:1,overflow:'hidden'}}>
               {view==='dashboard'&&<DashView/>}
               {view==='script'&&<ScriptView/>}
@@ -3667,6 +3713,22 @@ function Shell({initProj,onBack,lang,setLang,dark,setDark}){
               {view==='daily'&&<DailyView/>}
             </div>
           </div>
+
+          {/* Mobile bottom nav */}
+          {mob&&<div style={{flexShrink:0,background:T.panel,borderTop:`1px solid ${T.border}`,
+            display:'flex',padding:'6px 0',paddingBottom:'max(6px,env(safe-area-inset-bottom))',zIndex:100}}>
+            {VIEWS.map(v=>(
+              <button key={v.id} onClick={()=>setView(v.id)}
+                style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:2,
+                  padding:'4px 2px',background:'transparent',border:'none',cursor:'pointer',
+                  color:view===v.id?T.accent:T.textDim}}>
+                <span style={{fontSize:18,lineHeight:1}}>{v.icon}</span>
+                <span style={{fontFamily:"'Geist Mono',monospace",fontSize:7,letterSpacing:'0.04em',
+                  whiteSpace:'nowrap',marginTop:1}}>{v.label.slice(0,6)}</span>
+                {view===v.id&&<div style={{width:18,height:2,borderRadius:1,background:T.accent,marginTop:1}}/>}
+              </button>
+            ))}
+          </div>}
         </div>
       {showMerge&&<MergeModal proj={proj} onClose={()=>setShowMerge(false)} onMerge={(chunk,replace)=>{const merged=mergeProjectChunk(proj,chunk,replace);setProj(merged);const all=loadAll();const i=all.findIndex(x=>x._id===merged._id);if(i>=0){all[i]=merged;saveAll(all);}setShowMerge(false);}}/>}
       </Ctx.Provider>
@@ -3677,6 +3739,19 @@ function Shell({initProj,onBack,lang,setLang,dark,setDark}){
 /* ═══════════════════════════════════════════════════════════
    DASHBOARD
 ═══════════════════════════════════════════════════════════ */
+
+/* ═══════════════════════════════════════════════════════════
+   MOBILE DETECTION HOOK
+═══════════════════════════════════════════════════════════ */
+function useMobile(){ 
+  const [mob,setMob]=React.useState(window.innerWidth<=768);
+  React.useEffect(()=>{
+    const fn=()=>setMob(window.innerWidth<=768);
+    window.addEventListener('resize',fn);
+    return ()=>window.removeEventListener('resize',fn);
+  },[]);
+  return mob;
+}
 function App(){
   const [proj,setProj]=useState(null);
   const [lang,setLang]=useState(()=>localStorage.getItem('nf10_lang')||'en');
