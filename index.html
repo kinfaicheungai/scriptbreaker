@@ -793,7 +793,7 @@ function BDView(){
       <div style={{flex:1,overflow:'hidden',display:'flex',flexDirection:mob?'column':'row'}}>
 
         {tab==='locations'&&<>
-          <div style={{width:mob?'100%':bdLeftWidth,flexShrink:0,overflow:'auto',padding:'8px 0',display:mob&&selLoc?'none':'block'}}>
+          <div style={{width:mob?'100%':bdLeftWidth,flexShrink:0,overflow:'auto',padding:'8px 0',display:mob&&selLoc?'none':'block',maxHeight:mob?'45vh':undefined}}>
             <button onClick={()=>setSelLoc('__all')} style={{width:'100%',padding:'9px 14px',textAlign:'left',background:selLoc==='__all'?T.chip:'transparent',fontSize:13,color:selLoc==='__all'?T.text:T.textMute,borderBottom:`1px solid ${T.rule}`,marginBottom:4}}>
               All locations <span style={{float:'right',fontFamily:"'Geist Mono',monospace",fontSize:10,color:T.textDim}}>{proj.scenes?.length}</span>
             </button>
@@ -816,7 +816,7 @@ function BDView(){
             onMouseLeave={e=>{e.currentTarget.style.background='transparent';}}>
             <div style={{position:'absolute',top:'50%',left:'50%',transform:'translate(-50%,-50%)',width:3,height:32,borderRadius:2,background:T.border,opacity:0.7}}/>
           </div>}
-          <div style={{flex:1,overflow:'auto',padding:24}}>
+          <div style={{flex:1,overflow:'auto',padding:mob?12:24,minHeight:0}}>
             {selLoc==='__all'?(
               <div style={{display:'grid',gap:12}}>
                 {filteredGrouped.map(({loc,scenes})=>(
@@ -866,7 +866,7 @@ function BDView(){
         </>}
 
         {tab==='props'&&<>
-          <div style={{width:mob?'100%':bdLeftWidth,flexShrink:0,overflow:'auto',padding:'8px 0',display:mob&&selProp?'none':'block'}}>
+          <div style={{width:mob?'100%':bdLeftWidth,flexShrink:0,overflow:'auto',padding:'8px 0',display:mob&&selProp?'none':'block',maxHeight:mob?'45vh':undefined}}>
             <div style={{padding:'6px 12px 4px',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
               <div style={{fontFamily:"'Geist Mono',monospace",fontSize:10,color:T.textDim}}>{allProps.length} PROPS TOTAL</div>
               {selProps.size>=2&&(
@@ -909,7 +909,7 @@ function BDView(){
             onMouseLeave={e=>{e.currentTarget.style.background='transparent';}}>
             <div style={{position:'absolute',top:'50%',left:'50%',transform:'translate(-50%,-50%)',width:3,height:32,borderRadius:2,background:T.border,opacity:0.7}}/>
           </div>
-          <div style={{flex:1,overflow:'auto',padding:24}}>
+          <div style={{flex:1,overflow:'auto',padding:mob?12:24,minHeight:0}}>
             {selProp?(()=>{
               const prop=allProps.find(p=>p.name===selProp);
               if(!prop)return null;
@@ -946,7 +946,7 @@ function BDView(){
         </>}
 
         {tab==='costumes'&&<>
-          <div style={{width:mob?'100%':bdLeftWidth,flexShrink:0,overflow:'auto',padding:'8px 0',display:mob&&selCos?'none':'block'}}>
+          <div style={{width:mob?'100%':bdLeftWidth,flexShrink:0,overflow:'auto',padding:'8px 0',display:mob&&selCos?'none':'block',maxHeight:mob?'45vh':undefined}}>
             <div style={{padding:'6px 12px 4px',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
               <div style={{fontFamily:"'Geist Mono',monospace",fontSize:10,color:T.textDim}}>{allCostumes.length} WARDROBE ENTRIES</div>
               {selCosKeys.size>=2&&(
@@ -992,7 +992,7 @@ function BDView(){
             onMouseLeave={e=>{e.currentTarget.style.background='transparent';}}>
             <div style={{position:'absolute',top:'50%',left:'50%',transform:'translate(-50%,-50%)',width:3,height:32,borderRadius:2,background:T.border,opacity:0.7}}/>
           </div>
-          <div style={{flex:1,overflow:'auto',padding:24}}>
+          <div style={{flex:1,overflow:'auto',padding:mob?12:24,minHeight:0}}>
             {selCos!==null&&allCostumes[selCos]?(()=>{
               const cos=allCostumes[selCos];
               const cosKey=cos.charId+'::'+cos.desc;
@@ -1034,7 +1034,7 @@ function BDView(){
         </>}
 
         {tab==='characters'&&<>
-          <div style={{width:mob?'100%':bdLeftWidth,flexShrink:0,overflow:'auto',padding:'8px 0',display:mob&&selChar?'none':'block'}}>
+          <div style={{width:mob?'100%':bdLeftWidth,flexShrink:0,overflow:'auto',padding:'8px 0',display:mob&&selChar?'none':'block',maxHeight:mob?'45vh':undefined}}>
             {filteredChars.map(c=>{
               const sc=proj.scenes?.filter(s=>s.characters?.includes(c.id)).length||0;
               return(
@@ -1059,7 +1059,7 @@ function BDView(){
             onMouseLeave={e=>{e.currentTarget.style.background='transparent';}}>
             <div style={{position:'absolute',top:'50%',left:'50%',transform:'translate(-50%,-50%)',width:3,height:32,borderRadius:2,background:T.border,opacity:0.7}}/>
           </div>
-          <div style={{flex:1,overflow:'auto',padding:24}}>
+          <div style={{flex:1,overflow:'auto',padding:mob?12:24,minHeight:0}}>
             {selChar?(()=>{
               const char=proj.characters?.find(c=>c.id===selChar);
               if(!char)return null;
