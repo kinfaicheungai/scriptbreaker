@@ -22,6 +22,9 @@ input,textarea,select{font:inherit;color:inherit;background:none;border:none;out
 @keyframes spin{to{transform:rotate(360deg)}}
 @keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
 </style>
+<!-- Firebase -->
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 <!-- Google Identity Services -->
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
@@ -2314,20 +2317,48 @@ function CallSheetTab({schedule,dayNumbers,getScene,getLoc,getChar,dayDate,fmtDa
 function ChecklistTab({schedule,dayNumbers,getScene,getLoc,getChar,dayDate,fmtDate}){
   const {proj,updateProj}=useProj();
   const [selDay,setSelDay]=React.useState(dayNumbers[0]||null);
-  const [editItem,setEditItem]=React.useState(null); // {cat,idx} or null
+  const [editItem,setEditItem]=React.useState(null);
   const [newText,setNewText]=React.useState('');
   const [addingCat,setAddingCat]=React.useState(null);
   const [addText,setAddText]=React.useState('');
+  const [fbData,setFbData]=React.useState({}); // realtime data from Firestore
+  const [syncStatus,setSyncStatus]=React.useState(''); // '' | 'saving' | 'saved' | 'live'
+  const unsubRef=React.useRef({});
 
   React.useEffect(()=>{if(dayNumbers.length>0&&!selDay)setSelDay(dayNumbers[0]);},[dayNumbers]);
+
+  // Subscribe to Firestore realtime updates when day changes
+  React.useEffect(()=>{
+    if(!selDay||!proj._id)return;
+    const key=proj._id+'_'+selDay;
+    // Unsubscribe previous
+    if(unsubRef.current[key]){ /* already subscribed */ return; }
+    const unsub=fbSubscribeChecklist(proj._id, selDay, (data)=>{
+      setFbData(prev=>({...prev,[selDay]:data}));
+      setSyncStatus('live');
+    });
+    unsubRef.current[key]=unsub;
+    return ()=>{ unsub && unsub(); delete unsubRef.current[key]; };
+  },[selDay,proj._id]);
 
   const dayData=selDay?schedule.days[selDay]:null;
   const dt=selDay?dayDate(selDay):null;
 
-  // checklists stored in proj._checklists[dayNum][cat] = [{text,checked}]
-  const getChecklist=(dayNum)=>proj._checklists?.[dayNum]||{};
+  // Get checklist: prefer Firestore realtime data, fallback to proj._checklists
+  const getChecklist=(dayNum)=>fbData[dayNum]||proj._checklists?.[dayNum]||{};
+
+  // Save to both Firestore (realtime) and proj (export)
   const saveChecklist=(dayNum,data)=>{
+    setSyncStatus('saving');
+    // Save to Firestore for realtime sync
+    fbSaveChecklist(proj._id||'default', dayNum, data).then(()=>{
+      setSyncStatus('saved');
+      setTimeout(()=>setSyncStatus('live'),1500);
+    });
+    // Also save to proj for Export JSON
     updateProj(p=>({...p,_checklists:{...(p._checklists||{}),[dayNum]:data}}));
+    // Update local fbData immediately for instant UI response
+    setFbData(prev=>({...prev,[dayNum]:data}));
   };
 
   const toggleItem=(cat,idx)=>{
@@ -2441,6 +2472,18 @@ function ChecklistTab({schedule,dayNumbers,getScene,getLoc,getChar,dayDate,fmtDa
               DAY {String(selDay).padStart(2,'0')}
             </div>
             {dt&&<div style={{fontSize:12,color:T.textMute}}>{fmtDate(dt)}</div>}
+            {/* Realtime sync status */}
+            <div style={{display:'flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:99,
+              background:syncStatus==='live'?T.success+'18':syncStatus==='saving'?T.warn+'18':T.surface2,
+              border:`1px solid ${syncStatus==='live'?T.success+'44':syncStatus==='saving'?T.warn+'44':T.border}`}}>
+              <div style={{width:5,height:5,borderRadius:'50%',
+                background:syncStatus==='live'?T.success:syncStatus==='saving'?T.warn:T.textDim,
+                animation:syncStatus==='live'?'pulse 2s infinite':undefined}}/>
+              <span style={{fontFamily:"'Geist Mono',monospace",fontSize:8,
+                color:syncStatus==='live'?T.success:syncStatus==='saving'?T.warn:T.textDim}}>
+                {syncStatus==='live'?'LIVE':syncStatus==='saving'?'SYNCING...':'OFFLINE'}
+              </span>
+            </div>
             <div style={{marginLeft:'auto',fontFamily:"'Geist Mono',monospace",fontSize:10,
               color:pct===100?T.success:T.textDim}}>
               {checkedItems}/{totalItems} · {pct}%
@@ -3353,6 +3396,65 @@ function DriveSaveBtn({ proj }) {
   );
 }
 
+
+/* ═══════════════════════════════════════════════════════════
+   FIREBASE / FIRESTORE - Realtime Checklist Sync
+═══════════════════════════════════════════════════════════ */
+const FB_CONFIG = {
+  apiKey: "AIzaSyD3iid1fb9yxsSTmjpAoWaFYZsLQDypcEA",
+  authDomain: "scriptbreaker-ea1db.firebaseapp.com",
+  projectId: "scriptbreaker-ea1db",
+  storageBucket: "scriptbreaker-ea1db.firebasestorage.app",
+  messagingSenderId: "91198906123",
+  appId: "1:91198906123:web:58183d16476ba3424f0c0e"
+};
+
+let _fbApp = null;
+let _fbDb = null;
+
+function getFirestore() {
+  if(_fbDb) return _fbDb;
+  try {
+    _fbApp = firebase.initializeApp(FB_CONFIG);
+    _fbDb = firebase.firestore();
+    return _fbDb;
+  } catch(e) {
+    // already initialized
+    _fbDb = firebase.firestore();
+    return _fbDb;
+  }
+}
+
+// Save checklist for a project+day to Firestore
+async function fbSaveChecklist(projectId, dayNum, data) {
+  try {
+    const db = getFirestore();
+    await db.collection('checklists')
+      .doc(projectId + '_day' + dayNum)
+      .set({ projectId, dayNum, data, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+  } catch(e) { console.warn('FB save error:', e); }
+}
+
+// Load checklist for a project+day
+async function fbLoadChecklist(projectId, dayNum) {
+  try {
+    const db = getFirestore();
+    const doc = await db.collection('checklists').doc(projectId + '_day' + dayNum).get();
+    return doc.exists ? doc.data().data : null;
+  } catch(e) { console.warn('FB load error:', e); return null; }
+}
+
+// Subscribe to realtime updates for a project+day
+function fbSubscribeChecklist(projectId, dayNum, callback) {
+  try {
+    const db = getFirestore();
+    return db.collection('checklists')
+      .doc(projectId + '_day' + dayNum)
+      .onSnapshot(doc => {
+        if(doc.exists) callback(doc.data().data);
+      });
+  } catch(e) { console.warn('FB subscribe error:', e); return ()=>{}; }
+}
 function Cabinet({onOpen,lang,setLang,dark,setDark}){
   const t=LANGS[lang]||LANGS.en;
   const [projects,setProjects]=useState(loadAll);
