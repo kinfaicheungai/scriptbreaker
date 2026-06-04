@@ -781,17 +781,16 @@ function BDView(){
 
   return(
     <div style={{height:'100%',display:'flex',flexDirection:'column'}}>
-      <div style={{padding:'8px 20px',borderBottom:`1px solid ${T.rule}`,display:'flex',gap:4,flexShrink:0}}>
+      <div style={{padding:mob?'6px 8px':'8px 20px',borderBottom:`1px solid ${T.rule}`,display:'flex',gap:mob?3:4,flexShrink:0,flexWrap:'wrap'}}>
         {TABS.map(tb=>(
-          <button key={tb.id} onClick={()=>setTab(tb.id)} style={{padding:'6px 14px',borderRadius:6,fontSize:12,display:'flex',alignItems:'center',gap:5,background:tab===tb.id?T.chip:'transparent',color:tab===tb.id?T.text:T.textMute,border:`1px solid ${tab===tb.id?T.border:'transparent'}`}}>
-            <span>{tb.icon}</span>{tb.label}
+          <button key={tb.id} onClick={()=>setTab(tb.id)} style={{padding:mob?'5px 10px':'6px 14px',borderRadius:6,fontSize:mob?11:12,display:'flex',alignItems:'center',gap:4,background:tab===tb.id?T.chip:'transparent',color:tab===tb.id?T.text:T.textMute,border:`1px solid ${tab===tb.id?T.border:'transparent'}`}}>
+            <span>{tb.icon}</span>{mob?tb.label.slice(0,4):tb.label}
           </button>
         ))}
-        <div style={{flex:1}}/>
-        <input value={bdSearch} onChange={e=>setBdSearch(e.target.value)} placeholder={`Search ${tab}…`}
-          style={{width:220,background:T.surface2,border:`1px solid ${T.border}`,borderRadius:6,padding:'6px 10px',fontSize:12,color:T.text}}/>
+        <input value={bdSearch} onChange={e=>setBdSearch(e.target.value)} placeholder={`Search...`}
+          style={{width:mob?'100%':220,background:T.surface2,border:`1px solid ${T.border}`,borderRadius:6,padding:'5px 10px',fontSize:12,color:T.text,marginTop:mob?2:0}}/>
       </div>
-      <div style={{flex:1,overflow:'hidden',display:'flex'}}>
+      <div style={{flex:1,overflow:'hidden',display:'flex',flexDirection:mob?'column':'row'}}>
 
         {tab==='locations'&&<>
           <div style={{width:mob?'100%':bdLeftWidth,flexShrink:0,overflow:'auto',padding:'8px 0',display:mob&&selLoc?'none':'block'}}>
@@ -867,7 +866,7 @@ function BDView(){
         </>}
 
         {tab==='props'&&<>
-          <div style={{width:bdLeftWidth,flexShrink:0,overflow:'auto',padding:'8px 0'}}>
+          <div style={{width:mob?'100%':bdLeftWidth,flexShrink:0,overflow:'auto',padding:'8px 0',display:mob&&selProp?'none':'block'}}>
             <div style={{padding:'6px 12px 4px',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
               <div style={{fontFamily:"'Geist Mono',monospace",fontSize:10,color:T.textDim}}>{allProps.length} PROPS TOTAL</div>
               {selProps.size>=2&&(
@@ -918,7 +917,8 @@ function BDView(){
               return(
                 <div>
                   <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14}}>
-                    <div style={{fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:24,color:T.text}}>{prop.name}</div>
+                    {mob&&<button onClick={()=>setSelProp(null)} style={{color:T.accent,fontSize:11,fontFamily:"'Geist Mono',monospace",background:'transparent',border:'none',cursor:'pointer',padding:'0 0 10px',display:'block'}}>← Back</button>}
+                <div style={{fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:mob?18:24,color:T.text}}>{prop.name}</div>
                     {prop.critical&&<span style={{padding:'2px 8px',borderRadius:4,background:T.danger+'18',border:`1px solid ${T.danger}30`,fontSize:10,color:T.danger}}>CRITICAL ★</span>}
                     <span style={{fontSize:12,color:T.textMute}}>{prop.scenes.length} scenes: {prop.scenes.join(', ')}</span>
                   </div>
@@ -946,7 +946,7 @@ function BDView(){
         </>}
 
         {tab==='costumes'&&<>
-          <div style={{width:bdLeftWidth,flexShrink:0,overflow:'auto',padding:'8px 0'}}>
+          <div style={{width:mob?'100%':bdLeftWidth,flexShrink:0,overflow:'auto',padding:'8px 0',display:mob&&selCos?'none':'block'}}>
             <div style={{padding:'6px 12px 4px',display:'flex',alignItems:'center',justifyContent:'space-between'}}>
               <div style={{fontFamily:"'Geist Mono',monospace",fontSize:10,color:T.textDim}}>{allCostumes.length} WARDROBE ENTRIES</div>
               {selCosKeys.size>=2&&(
@@ -1003,7 +1003,8 @@ function BDView(){
                     <div style={{width:38,height:38,borderRadius:8,background:cos.charColor+'22',border:`1px solid ${cos.charColor}44`,display:'grid',placeItems:'center',fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:20,color:cos.charColor}}>{(cos.charName||'?')[0]}</div>
                     <div>
                       <div style={{fontSize:11,color:cos.charColor,fontFamily:"'Geist Mono',monospace",marginBottom:2}}>{cos.charName}</div>
-                      <div style={{fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:20,color:T.text}}>{cos.desc}</div>
+                      {mob&&<button onClick={()=>setSelCos(null)} style={{color:T.accent,fontSize:11,fontFamily:"'Geist Mono',monospace",background:'transparent',border:'none',cursor:'pointer',padding:'0 0 10px',display:'block'}}>← Back</button>}
+              <div style={{fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:mob?16:20,color:T.text}}>{cos.desc}</div>
                       <div style={{fontSize:11,color:T.textMute,marginTop:2}}>Scenes: {cos.scenes.join(', ')}</div>
                     </div>
                   </div>
@@ -1033,7 +1034,7 @@ function BDView(){
         </>}
 
         {tab==='characters'&&<>
-          <div style={{width:bdLeftWidth,flexShrink:0,overflow:'auto',padding:'8px 0'}}>
+          <div style={{width:mob?'100%':bdLeftWidth,flexShrink:0,overflow:'auto',padding:'8px 0',display:mob&&selChar?'none':'block'}}>
             {filteredChars.map(c=>{
               const sc=proj.scenes?.filter(s=>s.characters?.includes(c.id)).length||0;
               return(
@@ -1343,7 +1344,8 @@ function ContCards(){
             <div style={{display:'flex',alignItems:'center',gap:14,marginBottom:20}}>
               <div style={{width:48,height:48,borderRadius:10,background:char.color+'22',border:`1px solid ${char.color}44`,display:'grid',placeItems:'center',fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:26,color:char.color}}>{(char.name||'?')[0]}</div>
               <div>
-                <div style={{fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:24,marginBottom:4,color:T.text}}>{char.name}</div>
+                {mob&&<button onClick={()=>setSelChar(null)} style={{color:T.accent,fontSize:11,fontFamily:"'Geist Mono',monospace",background:'transparent',border:'none',cursor:'pointer',padding:'0 0 10px',display:'block'}}>← Back</button>}
+              <div style={{fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:mob?18:24,marginBottom:4,color:T.text}}>{char.name}</div>
                 {char.description&&<div style={{fontSize:12,color:T.textDim,marginBottom:6}}>{char.description}</div>}
                 <div style={{display:'flex',gap:8}}>
                   <Pill>{charScenes.length} scenes</Pill>
@@ -2344,6 +2346,7 @@ function CallSheetTab({schedule,dayNumbers,getScene,getLoc,getChar,dayDate,fmtDa
 ═══════════════════════════════════════════════════════════ */
 function ChecklistTab({schedule,dayNumbers,getScene,getLoc,getChar,dayDate,fmtDate}){
   const {proj,updateProj}=useProj();
+  const mob=useMobile();
   const [selDay,setSelDay]=React.useState(dayNumbers[0]||null);
   const [editItem,setEditItem]=React.useState(null);
   const [newText,setNewText]=React.useState('');
@@ -2826,10 +2829,36 @@ function ScriptView(){
 
   const filteredScenes=proj.scenes?.filter(s=>!search||s.slug?.toLowerCase().includes(search.toLowerCase())||s.scriptBody?.toLowerCase().includes(search.toLowerCase()))||[];
 
+  const [drawerOpen,setDrawerOpen]=React.useState(false);
+
   return(
-    <div style={{height:'100%',display:'flex'}}>
-      {/* Scene nav */}
-      <div style={{width:200,flexShrink:0,borderRight:`1px solid ${T.border}`,display:'flex',flexDirection:'column',overflow:'hidden'}}>
+    <div style={{height:'100%',display:'flex',position:'relative'}}>
+
+      {/* Mobile drawer backdrop */}
+      {mob&&drawerOpen&&(
+        <div onClick={()=>setDrawerOpen(false)}
+          style={{position:'absolute',inset:0,background:'rgba(0,0,0,0.45)',zIndex:200}}/>
+      )}
+
+      {/* Scene nav - desktop sidebar / mobile slide-in drawer */}
+      <div style={{
+        width:200,flexShrink:0,borderRight:`1px solid ${T.border}`,
+        display:'flex',flexDirection:'column',overflow:'hidden',
+        ...(mob?{
+          position:'absolute',top:0,bottom:0,left:0,zIndex:300,
+          transform:drawerOpen?'translateX(0)':'translateX(-100%)',
+          transition:'transform 0.25s ease',
+          width:240,boxShadow:drawerOpen?'4px 0 20px rgba(0,0,0,0.3)':'none',
+          background:T.panel,
+        }:{})
+      }}>
+        {mob&&(
+          <div style={{padding:'10px 12px',borderBottom:`1px solid ${T.rule}`,display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+            <span style={{fontFamily:"'Geist Mono',monospace",fontSize:10,color:T.textDim,letterSpacing:'0.1em'}}>SCENES</span>
+            <button onClick={()=>setDrawerOpen(false)}
+              style={{color:T.textDim,fontSize:18,background:'transparent',border:'none',cursor:'pointer',lineHeight:1}}>x</button>
+          </div>
+        )}
         <div style={{padding:'8px 10px',borderBottom:`1px solid ${T.rule}`}}>
           <input value={search} onChange={e=>setSearch(e.target.value)} placeholder={t.searchPlaceholder}
             style={{width:'100%',background:T.surface2,border:`1px solid ${T.border}`,borderRadius:5,padding:'5px 8px',fontSize:11,color:T.text}}/>
@@ -2839,7 +2868,7 @@ function ScriptView(){
             const loc=findLoc(proj,s.locationId);
             const actCol=ACT_COLORS[(s.act||1)-1];
             return(
-              <button key={s.id} onClick={()=>{setSelScene(s.id);bodyRefs.current[s.id]?.scrollIntoView({behavior:'smooth',block:'start'});}}
+              <button key={s.id} onClick={()=>{setSelScene(s.id);bodyRefs.current[s.id]?.scrollIntoView({behavior:'smooth',block:'start'});if(mob)setDrawerOpen(false);}}
                 style={{width:'100%',padding:'7px 10px',textAlign:'left',background:selScene===s.id?T.chip:'transparent',borderLeft:selScene===s.id?`2px solid ${actCol}`:'2px solid transparent',marginBottom:1}}>
                 <div style={{display:'flex',alignItems:'center',gap:5}}>
                   <Mono s={{color:T.textDim,fontSize:10}}>{s.id}</Mono>
@@ -2855,8 +2884,22 @@ function ScriptView(){
       </div>
 
       {/* Script body */}
-      <div style={{flex:1,overflow:'auto',padding:'20px 0'}}>
-        <div style={{maxWidth:760,margin:'0 auto',padding:'0 42px'}}>
+      <div style={{flex:1,overflow:'hidden',display:'flex',flexDirection:'column'}}>
+        {mob&&(
+          <div style={{padding:'8px 12px',borderBottom:`1px solid ${T.rule}`,display:'flex',alignItems:'center',gap:8,flexShrink:0,background:T.panel}}>
+            <button onClick={()=>setDrawerOpen(true)}
+              style={{display:'flex',alignItems:'center',gap:5,padding:'5px 12px',
+                background:T.chip,border:`1px solid ${T.border}`,borderRadius:6,
+                color:T.text,fontSize:11,fontFamily:"'Geist Mono',monospace",cursor:'pointer',flexShrink:0}}>
+              ☰ Scenes
+            </button>
+            <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search..."
+              style={{flex:1,background:T.surface2,border:`1px solid ${T.border}`,borderRadius:5,
+                padding:'5px 8px',fontSize:11,color:T.text}}/>
+          </div>
+        )}
+        <div style={{flex:1,overflow:'auto',padding:mob?'16px 0':'20px 0'}}>
+        <div style={{maxWidth:mob?'100%':760,margin:'0 auto',padding:mob?'0 14px':'0 42px'}}>
           {filteredScenes.map((scene,si)=>{
             const loc=findLoc(proj,scene.locationId);
             const sChars=(scene.characters||[]).map(id=>findChar(proj,id)).filter(Boolean);
@@ -2892,6 +2935,7 @@ function ScriptView(){
               </div>
             );
           })}
+        </div>
         </div>
       </div>
     </div>
