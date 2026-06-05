@@ -455,10 +455,10 @@ function ShotCard(props) {
         <div style={{background:T.panel,border:'1px solid '+T.borderHi,borderRadius:14,width:'min(820px,94vw)',maxHeight:'90vh',overflow:'auto',display:'grid',gridTemplateColumns:'1fr 1fr'}}>
           <div style={{background:T.surface2,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',minHeight:360,position:'relative',borderRadius:'14px 0 0 14px',overflow:'hidden'}}
             onPaste={onPaste} onDragOver={function(e){e.preventDefault();}} onDrop={onDrop}>
-            {shot.refImageUrl && <img src={shot.refImageUrl} style={{width:'100%',height:'100%',objectFit:'contain'}} alt="ref"/>}
-            {!shot.refImageUrl && ytId && <img src={'https://img.youtube.com/vi/'+ytId+'/hqdefault.jpg'} style={{width:'100%',objectFit:'cover'}} alt="yt"/>}
+            {shot.refImageUrl && !ytId && <img src={shot.refImageUrl} style={{width:'100%',height:'100%',objectFit:'contain'}} alt="ref"/>}
+            {ytId && <YtThumbnail ytId={ytId} url={shot.refVideoUrl}/>}
             {!shot.refImageUrl && !ytId && <div style={{textAlign:'center',color:T.textDim,padding:32}}><div style={{fontSize:44,opacity:0.3}}>🎬</div><div style={{fontSize:12,color:T.textMute,marginTop:8}}>Paste or drop image</div></div>}
-            {shot.refImageUrl && <button onClick={function(){onUpdate({refImageUrl:''})}} style={{position:'absolute',top:8,right:8,background:'rgba(0,0,0,0.6)',borderRadius:99,width:26,height:26,color:'white',fontSize:14,display:'grid',placeItems:'center'}}>x</button>}
+            {shot.refImageUrl && !ytId && <button onClick={function(){onUpdate({refImageUrl:''})}} style={{position:'absolute',top:8,right:8,background:'rgba(0,0,0,0.6)',borderRadius:99,width:26,height:26,color:'white',fontSize:14,display:'grid',placeItems:'center'}}>x</button>}
             <div style={{position:'absolute',top:8,left:8,background:'rgba(14,13,11,0.85)',borderRadius:4,padding:'2px 8px',fontFamily:"'Geist Mono',monospace",fontSize:11,color:T.text}}>{shot.shotNo}</div>
           </div>
           <div style={{padding:24,display:'flex',flexDirection:'column',gap:14}}>
@@ -533,7 +533,16 @@ function ShotCard(props) {
       <div style={{height:105,background:T.surface2,position:'relative',overflow:'hidden',display:'flex',alignItems:'center',justifyContent:'center',cursor:'pointer'}}
         onClick={function(){setMode('expand');}}>
         {shot.refImageUrl && <img src={shot.refImageUrl} style={{width:'100%',height:'100%',objectFit:'cover'}} alt="ref"/>}
-        {!shot.refImageUrl && ytId && <img src={'https://img.youtube.com/vi/'+ytId+'/mqdefault.jpg'} style={{width:'100%',height:'100%',objectFit:'cover'}} alt="yt"/>}
+        {!shot.refImageUrl && ytId && (
+          <div style={{width:'100%',height:'100%',position:'relative',cursor:'pointer'}} onClick={function(e){e.stopPropagation();window.open('https://youtu.be/'+ytId,'_blank');}}>
+            <img src={'https://img.youtube.com/vi/'+ytId+'/mqdefault.jpg'} style={{width:'100%',height:'100%',objectFit:'cover'}} alt="yt"/>
+            <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.25)'}}>
+              <div style={{width:28,height:28,borderRadius:'50%',background:'rgba(255,0,0,0.85)',display:'flex',alignItems:'center',justifyContent:'center'}}>
+                <div style={{width:0,height:0,borderTop:'6px solid transparent',borderBottom:'6px solid transparent',borderLeft:'10px solid white',marginLeft:2}}/>
+              </div>
+            </div>
+          </div>
+        )}
         {!shot.refImageUrl && !ytId && <div style={{textAlign:'center',color:T.textDim}}><div style={{fontSize:22}}>🎬</div><div style={{fontSize:10,fontFamily:"'Geist Mono',monospace"}}>CLICK TO EXPAND</div></div>}
         <div style={{position:'absolute',top:5,left:5,background:'rgba(14,13,11,0.85)',borderRadius:3,padding:'1px 5px',fontFamily:"'Geist Mono',monospace",fontSize:10,color:T.text}}>{shot.shotNo}</div>
         <div style={{position:'absolute',top:5,right:5,background:sc+'33',borderRadius:3,padding:'1px 5px',fontFamily:"'Geist Mono',monospace",fontSize:10,color:sc}}>{shot.size}</div>
@@ -546,6 +555,88 @@ function ShotCard(props) {
         {shot.lighting && <div style={{fontSize:10,color:T.info,marginTop:2}}>💡 {shot.lighting}</div>}
         <button onClick={function(){setMode('edit');}} style={{marginTop:5,width:'100%',padding:'3px 0',border:'1px solid '+T.border,borderRadius:4,fontSize:10,color:T.textDim}}>Edit</button>
       </div>
+    </div>
+  );
+}
+
+
+/* ═══════════════════════════════════════════════════════════
+   YOUTUBE THUMBNAIL + LIGHTBOX PLAYER
+═══════════════════════════════════════════════════════════ */
+function YtThumbnail({ytId, url}) {
+  const mob = useMobile();
+  const [playing, setPlaying] = React.useState(false);
+
+  function handlePlay(e) {
+    e.stopPropagation();
+    if (mob) {
+      // Mobile: open YouTube directly (best experience on iOS)
+      window.open(url || 'https://youtu.be/' + ytId, '_blank');
+    } else {
+      setPlaying(true);
+    }
+  }
+
+  return (
+    <div style={{width:'100%',height:'100%',position:'relative',minHeight:300}}>
+      {/* Thumbnail with play button */}
+      {!playing && (
+        <div style={{width:'100%',height:'100%',position:'relative',cursor:'pointer',minHeight:300}}
+          onClick={handlePlay}>
+          <img
+            src={'https://img.youtube.com/vi/'+ytId+'/hqdefault.jpg'}
+            style={{width:'100%',height:'100%',objectFit:'cover',display:'block'}}
+            alt="YouTube reference"/>
+          {/* Play button overlay */}
+          <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',
+            justifyContent:'center',background:'rgba(0,0,0,0.2)',transition:'background 0.15s'}}
+            onMouseEnter={e=>e.currentTarget.style.background='rgba(0,0,0,0.35)'}
+            onMouseLeave={e=>e.currentTarget.style.background='rgba(0,0,0,0.2)'}>
+            <div style={{width:56,height:56,borderRadius:'50%',
+              background:'rgba(255,0,0,0.92)',display:'flex',alignItems:'center',
+              justifyContent:'center',boxShadow:'0 2px 12px rgba(0,0,0,0.4)'}}>
+              <div style={{width:0,height:0,
+                borderTop:'11px solid transparent',
+                borderBottom:'11px solid transparent',
+                borderLeft:'18px solid white',
+                marginLeft:4}}/>
+            </div>
+          </div>
+          {/* YouTube badge */}
+          <div style={{position:'absolute',bottom:8,right:8,
+            background:'rgba(0,0,0,0.75)',borderRadius:4,padding:'2px 7px',
+            fontFamily:"'Geist Mono',monospace",fontSize:9,color:'#fff',
+            letterSpacing:'0.05em'}}>
+            YT REF
+          </div>
+        </div>
+      )}
+
+      {/* Desktop: inline iframe after click */}
+      {playing && !mob && (
+        <div style={{width:'100%',height:'100%',position:'relative',minHeight:300,display:'flex',flexDirection:'column'}}>
+          <iframe
+            src={'https://www.youtube.com/embed/'+ytId+'?autoplay=1&rel=0&modestbranding=1'}
+            style={{width:'100%',flex:1,border:'none',minHeight:280}}
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+            allowFullScreen/>
+          <div style={{display:'flex',gap:8,padding:'6px 8px',background:'rgba(14,13,11,0.9)'}}>
+            <button onClick={()=>setPlaying(false)}
+              style={{flex:1,padding:'4px 0',background:'transparent',border:'1px solid rgba(255,255,255,0.2)',
+                borderRadius:4,color:'rgba(255,255,255,0.7)',fontSize:10,
+                fontFamily:"'Geist Mono',monospace",cursor:'pointer',letterSpacing:'0.05em'}}>
+              THUMBNAIL
+            </button>
+            <a href={url||'https://youtu.be/'+ytId} target="_blank" rel="noopener noreferrer"
+              style={{flex:1,padding:'4px 0',background:'rgba(255,0,0,0.8)',border:'none',
+                borderRadius:4,color:'white',fontSize:10,fontFamily:"'Geist Mono',monospace",
+                cursor:'pointer',letterSpacing:'0.05em',display:'flex',alignItems:'center',
+                justifyContent:'center',textDecoration:'none'}}>
+              OPEN YT
+            </a>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
