@@ -534,13 +534,14 @@ function ShotCard(props) {
         onClick={function(){setMode('expand');}}>
         {shot.refImageUrl && <img src={shot.refImageUrl} style={{width:'100%',height:'100%',objectFit:'cover'}} alt="ref"/>}
         {!shot.refImageUrl && ytId && (
-          <div style={{width:'100%',height:'100%',position:'relative',cursor:'pointer'}} onClick={function(e){e.stopPropagation();window.open('https://youtu.be/'+ytId,'_blank');}}>
+          <div style={{width:'100%',height:'100%',position:'relative'}}>
             <img src={'https://img.youtube.com/vi/'+ytId+'/mqdefault.jpg'} style={{width:'100%',height:'100%',objectFit:'cover'}} alt="yt"/>
-            <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.25)'}}>
-              <div style={{width:28,height:28,borderRadius:'50%',background:'rgba(255,0,0,0.85)',display:'flex',alignItems:'center',justifyContent:'center'}}>
-                <div style={{width:0,height:0,borderTop:'6px solid transparent',borderBottom:'6px solid transparent',borderLeft:'10px solid white',marginLeft:2}}/>
+            <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.2)'}}>
+              <div style={{width:26,height:26,borderRadius:'50%',background:'rgba(255,0,0,0.85)',display:'flex',alignItems:'center',justifyContent:'center'}}>
+                <div style={{width:0,height:0,borderTop:'5px solid transparent',borderBottom:'5px solid transparent',borderLeft:'9px solid white',marginLeft:2}}/>
               </div>
             </div>
+            <div style={{position:'absolute',bottom:5,left:5,background:'rgba(0,0,0,0.7)',borderRadius:3,padding:'1px 5px',fontFamily:"'Geist Mono',monospace",fontSize:8,color:'#fff'}}>YT REF</div>
           </div>
         )}
         {!shot.refImageUrl && !ytId && <div style={{textAlign:'center',color:T.textDim}}><div style={{fontSize:22}}>🎬</div><div style={{fontSize:10,fontFamily:"'Geist Mono',monospace"}}>CLICK TO EXPAND</div></div>}
@@ -567,71 +568,71 @@ function YtThumbnail({ytId, url}) {
   const mob = useMobile();
   const [playing, setPlaying] = React.useState(false);
 
-  function handlePlay(e) {
-    e.stopPropagation();
-    if (mob) {
-      // Mobile: open YouTube directly (best experience on iOS)
-      window.open(url || 'https://youtu.be/' + ytId, '_blank');
-    } else {
-      setPlaying(true);
-    }
-  }
-
   return (
     <div style={{width:'100%',height:'100%',position:'relative',minHeight:300}}>
-      {/* Thumbnail with play button */}
+      {/* Thumbnail state */}
       {!playing && (
-        <div style={{width:'100%',height:'100%',position:'relative',cursor:'pointer',minHeight:300}}
-          onClick={handlePlay}>
+        <div style={{width:'100%',height:'100%',position:'relative',minHeight:300}}>
           <img
             src={'https://img.youtube.com/vi/'+ytId+'/hqdefault.jpg'}
             style={{width:'100%',height:'100%',objectFit:'cover',display:'block'}}
             alt="YouTube reference"/>
-          {/* Play button overlay */}
-          <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',
-            justifyContent:'center',background:'rgba(0,0,0,0.2)',transition:'background 0.15s'}}
-            onMouseEnter={e=>e.currentTarget.style.background='rgba(0,0,0,0.35)'}
-            onMouseLeave={e=>e.currentTarget.style.background='rgba(0,0,0,0.2)'}>
-            <div style={{width:56,height:56,borderRadius:'50%',
-              background:'rgba(255,0,0,0.92)',display:'flex',alignItems:'center',
-              justifyContent:'center',boxShadow:'0 2px 12px rgba(0,0,0,0.4)'}}>
-              <div style={{width:0,height:0,
-                borderTop:'11px solid transparent',
-                borderBottom:'11px solid transparent',
-                borderLeft:'18px solid white',
-                marginLeft:4}}/>
-            </div>
+          {/* Play button - clicking this plays inline (desktop) or opens YT (mobile) */}
+          <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.15)'}}>
+            <button
+              onClick={function(e){
+                e.stopPropagation();
+                if(mob){ window.open(url||'https://youtu.be/'+ytId,'_blank'); }
+                else { setPlaying(true); }
+              }}
+              style={{width:60,height:60,borderRadius:'50%',background:'rgba(255,0,0,0.9)',
+                border:'none',cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',
+                boxShadow:'0 2px 14px rgba(0,0,0,0.5)',transition:'transform 0.1s'}}
+              onMouseEnter={e=>e.currentTarget.style.transform='scale(1.1)'}
+              onMouseLeave={e=>e.currentTarget.style.transform='scale(1)'}>
+              <div style={{width:0,height:0,borderTop:'12px solid transparent',borderBottom:'12px solid transparent',borderLeft:'20px solid white',marginLeft:4}}/>
+            </button>
           </div>
-          {/* YouTube badge */}
-          <div style={{position:'absolute',bottom:8,right:8,
-            background:'rgba(0,0,0,0.75)',borderRadius:4,padding:'2px 7px',
-            fontFamily:"'Geist Mono',monospace",fontSize:9,color:'#fff',
-            letterSpacing:'0.05em'}}>
+          <div style={{position:'absolute',bottom:8,right:8,background:'rgba(0,0,0,0.75)',
+            borderRadius:4,padding:'2px 7px',fontFamily:"'Geist Mono',monospace",
+            fontSize:9,color:'#fff',letterSpacing:'0.05em'}}>
             YT REF
           </div>
+          {/* Mobile: also show open link at bottom */}
+          {mob&&<a href={url||'https://youtu.be/'+ytId} target="_blank" rel="noopener noreferrer"
+            onClick={e=>e.stopPropagation()}
+            style={{position:'absolute',bottom:0,left:0,right:0,padding:'6px',
+              background:'rgba(255,0,0,0.85)',color:'white',fontSize:10,
+              fontFamily:"'Geist Mono',monospace",textAlign:'center',
+              textDecoration:'none',letterSpacing:'0.05em'}}>
+            OPEN IN YOUTUBE
+          </a>}
         </div>
       )}
 
-      {/* Desktop: inline iframe after click */}
-      {playing && !mob && (
-        <div style={{width:'100%',height:'100%',position:'relative',minHeight:300,display:'flex',flexDirection:'column'}}>
+      {/* Desktop inline player */}
+      {playing && (
+        <div style={{width:'100%',height:'100%',minHeight:300,display:'flex',flexDirection:'column'}}>
           <iframe
             src={'https://www.youtube.com/embed/'+ytId+'?autoplay=1&rel=0&modestbranding=1'}
             style={{width:'100%',flex:1,border:'none',minHeight:280}}
             allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
             allowFullScreen/>
-          <div style={{display:'flex',gap:8,padding:'6px 8px',background:'rgba(14,13,11,0.9)'}}>
-            <button onClick={()=>setPlaying(false)}
-              style={{flex:1,padding:'4px 0',background:'transparent',border:'1px solid rgba(255,255,255,0.2)',
-                borderRadius:4,color:'rgba(255,255,255,0.7)',fontSize:10,
-                fontFamily:"'Geist Mono',monospace",cursor:'pointer',letterSpacing:'0.05em'}}>
+          <div style={{display:'flex',gap:6,padding:'6px 8px',background:'rgba(14,13,11,0.9)'}}>
+            <button onClick={function(e){e.stopPropagation();setPlaying(false);}}
+              style={{flex:1,padding:'4px 0',background:'transparent',
+                border:'1px solid rgba(255,255,255,0.25)',borderRadius:4,
+                color:'rgba(255,255,255,0.7)',fontSize:10,
+                fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>
               THUMBNAIL
             </button>
             <a href={url||'https://youtu.be/'+ytId} target="_blank" rel="noopener noreferrer"
-              style={{flex:1,padding:'4px 0',background:'rgba(255,0,0,0.8)',border:'none',
-                borderRadius:4,color:'white',fontSize:10,fontFamily:"'Geist Mono',monospace",
-                cursor:'pointer',letterSpacing:'0.05em',display:'flex',alignItems:'center',
-                justifyContent:'center',textDecoration:'none'}}>
+              onClick={e=>e.stopPropagation()}
+              style={{flex:1,padding:'4px 0',background:'rgba(255,0,0,0.85)',
+                borderRadius:4,color:'white',fontSize:10,
+                fontFamily:"'Geist Mono',monospace",cursor:'pointer',
+                display:'flex',alignItems:'center',justifyContent:'center',
+                textDecoration:'none',letterSpacing:'0.04em'}}>
               OPEN YT
             </a>
           </div>
