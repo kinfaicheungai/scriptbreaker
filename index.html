@@ -89,7 +89,7 @@ const LANGS={
     step2t:"Copy the JSON",step2d:"Claude outputs scenes, characters, props, wardrobe, shot list, continuity data.",
     step3t:"Import here",step3d:"Click Import JSON. All pages instantly populate with your real project data.",
     step4t:"Edit & manage",step4d:"Edit shots, update wardrobe, set shoot dates, mark equipment. Export JSON anytime.",
-    dashboard:"Dashboard",script:"Script",shots:"Shot Board",breakdown:"Breakdown",continuity:"Continuity",daily:"Daily List",
+    dashboard:"Dashboard",script:"Script",shots:"Shot Board",breakdown:"Breakdown",continuity:"Continuity",daily:"Daily List",notes:"On Set",
     scenes:"Scenes",characters:"Characters",props:"Props",locations:"Locations",shots_:"Shots",
     health:"PRODUCTION HEALTH",alerts:"CONTINUITY ALERTS",criticalProps:"CRITICAL PROPS",
     allProps:"ALL PROPS",wardrobe:"WARDROBE",makeup:"MAKEUP / HAIR",
@@ -111,7 +111,7 @@ const LANGS={
     step2t:"复制JSON",step2d:"Claude输出场景、角色、道具、服装、分镜清单、连戏数据。",
     step3t:"导入此处",step3d:"点击「导入JSON」，所有页面立即填充真实项目数据。",
     step4t:"编辑与管理",step4d:"编辑分镜、更新服装、设置拍摄日期、标记设备。随时导出JSON。",
-    dashboard:"总览",script:"剧本",shots:"分镜板",breakdown:"拍摄重组",continuity:"连戏管理",daily:"拍摄清单",
+    dashboard:"总览",script:"剧本",shots:"分镜板",breakdown:"拍摄重组",continuity:"连戏管理",daily:"拍摄清单",notes:"现场",
     scenes:"场次",characters:"角色",props:"道具",locations:"地点",shots_:"分镜",
     health:"制片健康",alerts:"连戏警告",criticalProps:"关键道具",
     allProps:"全部道具",wardrobe:"服装",makeup:"妆发",
@@ -1650,6 +1650,480 @@ function TimeButton({value,onChange,style}){
 /* ═══════════════════════════════════════════════════════════
    DAILY VIEW  -  container
 ═══════════════════════════════════════════════════════════ */
+
+/* ═══════════════════════════════════════════════════════════
+   ON SET NOTES - Real-time field notes with Firebase sync
+═══════════════════════════════════════════════════════════ */
+const NOTE_DEPTS = [
+  {id:'director',  label:'Director',  icon:'🎬', color:'#c084fc'},
+  {id:'camera',    label:'Camera',    icon:'📷', color:'#60a5fa'},
+  {id:'sound',     label:'Sound',     icon:'🔊', color:'#34d399'},
+  {id:'lighting',  label:'Lighting',  icon:'💡', color:'#fbbf24'},
+  {id:'art',       label:'Art/Props', icon:'🎨', color:'#f97316'},
+  {id:'wardrobe',  label:'Wardrobe',  icon:'👗', color:'#e879f9'},
+  {id:'makeup',    label:'Makeup',    icon:'💄', color:'#fb7185'},
+  {id:'post',      label:'Fix in Post',icon:'✂️', color:'#94a3b8'},
+  {id:'general',   label:'General',   icon:'📋', color:'#a8a29e'},
+];
+
+function OnSetNotes(){
+  const {proj} = useProj();
+  const mob = useMobile();
+
+  const [notes, setNotes] = React.useState([]);
+  const [selDept, setSelDept] = React.useState('all');
+  const [selScene, setSelScene] = React.useState('all');
+  const [showResolved, setShowResolved] = React.useState(false);
+  const [showAdd, setShowAdd] = React.useState(false);
+  const [editNote, setEditNote] = React.useState(null);
+  const [syncStatus, setSyncStatus] = React.useState('offline');
+  const unsubRef = React.useRef(null);
+
+  const projId = proj._id || 'default';
+
+  // Firebase realtime sync
+  React.useEffect(()=>{
+    try {
+      const db = getFirestore();
+      const unsub = db.collection('onset_notes')
+        .doc(projId)
+        .onSnapshot(doc=>{
+          if(doc.exists){
+            const data = doc.data().notes || [];
+            setNotes(data.sort((a,b)=>b.createdAt-a.createdAt));
+          } else {
+            setNotes([]);
+          }
+          setSyncStatus('live');
+        }, ()=>setSyncStatus('offline'));
+      unsubRef.current = unsub;
+      return ()=>{ if(unsubRef.current) unsubRef.current(); };
+    } catch(e){ setSyncStatus('offline'); }
+  },[projId]);
+
+  const saveNotes = async (updated) => {
+    setSyncStatus('saving');
+    try {
+      const db = getFirestore();
+      await db.collection('onset_notes').doc(projId).set({
+        notes: updated,
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+    } catch(e){ setSyncStatus('offline'); }
+  };
+
+  const addNote = (note) => {
+    const newNote = { ...note, id: Date.now()+'', createdAt: Date.now(), resolved: false };
+    const updated = [newNote, ...notes];
+    setNotes(updated);
+    saveNotes(updated);
+    setShowAdd(false);
+  };
+
+  const updateNote = (id, patch) => {
+    const updated = notes.map(n => n.id===id ? {...n,...patch} : n);
+    setNotes(updated);
+    saveNotes(updated);
+  };
+
+  const deleteNote = (id) => {
+    const updated = notes.filter(n => n.id!==id);
+    setNotes(updated);
+    saveNotes(updated);
+  };
+
+  const filtered = notes.filter(n=>{
+    if(!showResolved && n.resolved) return false;
+    if(selDept!=='all' && n.dept!==selDept) return false;
+    if(selScene!=='all' && n.sceneId!==selScene) return false;
+    return true;
+  });
+
+  const unresolvedCount = notes.filter(n=>!n.resolved).length;
+
+  return(
+    <div style={{height:'100%',display:'flex',flexDirection:'column',overflow:'hidden'}}>
+
+      {/* Header bar */}
+      <div style={{padding:mob?'8px 10px':'10px 20px',borderBottom:`1px solid ${T.rule}`,
+        display:'flex',alignItems:'center',gap:8,flexShrink:0,flexWrap:'wrap'}}>
+        <div style={{fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:mob?16:20,color:T.text}}>
+          On Set Notes
+        </div>
+        {/* Sync indicator */}
+        <div style={{display:'flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:99,
+          background:syncStatus==='live'?T.success+'18':T.surface2,
+          border:`1px solid ${syncStatus==='live'?T.success+'44':T.border}`}}>
+          <div style={{width:5,height:5,borderRadius:'50%',
+            background:syncStatus==='live'?T.success:T.textDim}}/>
+          <span style={{fontFamily:"'Geist Mono',monospace",fontSize:8,
+            color:syncStatus==='live'?T.success:T.textDim}}>
+            {syncStatus==='live'?'LIVE':syncStatus==='saving'?'SAVING...':'OFFLINE'}
+          </span>
+        </div>
+        {unresolvedCount>0&&<div style={{fontFamily:"'Geist Mono',monospace",fontSize:9,
+          color:T.warn,padding:'2px 8px',borderRadius:99,background:T.warn+'15',
+          border:`1px solid ${T.warn}33`}}>
+          {unresolvedCount} open
+        </div>}
+        <div style={{flex:1}}/>
+        <button onClick={()=>setShowResolved(s=>!s)}
+          style={{padding:'4px 10px',borderRadius:5,fontSize:10,cursor:'pointer',
+            fontFamily:"'Geist Mono',monospace",
+            background:showResolved?T.success+'18':'transparent',
+            border:`1px solid ${showResolved?T.success+'44':T.border}`,
+            color:showResolved?T.success:T.textDim}}>
+          {showResolved?'Hide resolved':'Show resolved'}
+        </button>
+        <button onClick={()=>{setEditNote(null);setShowAdd(true);}}
+          style={{padding:'4px 14px',background:T.accent,border:'none',borderRadius:5,
+            color:'#0e0d0b',fontSize:11,fontWeight:600,cursor:'pointer',
+            display:'flex',alignItems:'center',gap:4}}>
+          + Note
+        </button>
+      </div>
+
+      {/* Dept filter pills */}
+      <div style={{padding:mob?'6px 8px':'6px 16px',borderBottom:`1px solid ${T.rule}`,
+        display:'flex',gap:5,overflowX:'auto',flexShrink:0,
+        scrollbarWidth:'none',WebkitOverflowScrolling:'touch'}}>
+        <button onClick={()=>setSelDept('all')}
+          style={{padding:'3px 10px',borderRadius:99,fontSize:10,whiteSpace:'nowrap',cursor:'pointer',
+            fontFamily:"'Geist Mono',monospace",flexShrink:0,
+            background:selDept==='all'?T.accent:'transparent',
+            border:`1px solid ${selDept==='all'?T.accent:T.border}`,
+            color:selDept==='all'?'#0e0d0b':T.textMute}}>
+          ALL
+        </button>
+        {NOTE_DEPTS.map(d=>(
+          <button key={d.id} onClick={()=>setSelDept(selDept===d.id?'all':d.id)}
+            style={{padding:'3px 10px',borderRadius:99,fontSize:10,whiteSpace:'nowrap',
+              cursor:'pointer',fontFamily:"'Geist Mono',monospace",flexShrink:0,
+              background:selDept===d.id?d.color+'33':'transparent',
+              border:`1px solid ${selDept===d.id?d.color:T.border}`,
+              color:selDept===d.id?d.color:T.textMute}}>
+            {d.icon} {mob?d.label.split('/')[0]:d.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Scene filter */}
+      <div style={{padding:mob?'4px 8px':'4px 16px',borderBottom:`1px solid ${T.rule}`,
+        display:'flex',alignItems:'center',gap:8,flexShrink:0}}>
+        <span style={{fontFamily:"'Geist Mono',monospace",fontSize:8,color:T.textDim,flexShrink:0}}>SCENE</span>
+        <select value={selScene} onChange={e=>setSelScene(e.target.value)}
+          style={{flex:1,maxWidth:280,background:T.surface2,border:`1px solid ${T.border}`,
+            borderRadius:4,padding:'3px 6px',fontSize:11,color:T.text}}>
+          <option value="all">All scenes</option>
+          {proj.scenes?.map(s=>(
+            <option key={s.id} value={s.id}>{s.id} - {s.slug?.slice(0,40)}</option>
+          ))}
+        </select>
+      </div>
+
+      {/* Notes list */}
+      <div style={{flex:1,overflow:'auto',padding:mob?'8px 8px':'10px 16px'}}>
+        {filtered.length===0&&(
+          <div style={{textAlign:'center',padding:'48px 20px',color:T.textDim}}>
+            <div style={{fontSize:40,opacity:0.2,marginBottom:8}}>📋</div>
+            <div style={{fontSize:12}}>{notes.length===0?'No notes yet - tap + Note to add':'No notes match filter'}</div>
+          </div>
+        )}
+        {filtered.map(note=>{
+          const dept = NOTE_DEPTS.find(d=>d.id===note.dept)||NOTE_DEPTS[8];
+          const scene = proj.scenes?.find(s=>s.id===note.sceneId);
+          return(
+            <NoteCard key={note.id} note={note} dept={dept} scene={scene}
+              onResolve={()=>updateNote(note.id,{resolved:!note.resolved})}
+              onEdit={()=>{setEditNote(note);setShowAdd(true);}}
+              onDelete={()=>deleteNote(note.id)}
+              mob={mob}/>
+          );
+        })}
+      </div>
+
+      {/* Add / Edit modal */}
+      {showAdd&&(
+        <NoteModal
+          note={editNote}
+          scenes={proj.scenes||[]}
+          onSave={(data)=>{
+            if(editNote){ updateNote(editNote.id,data); setShowAdd(false); setEditNote(null); }
+            else addNote(data);
+          }}
+          onClose={()=>{ setShowAdd(false); setEditNote(null); }}
+          mob={mob}/>
+      )}
+    </div>
+  );
+}
+
+function NoteCard({note, dept, scene, onResolve, onEdit, onDelete, mob}){
+  const [showImg, setShowImg] = React.useState(false);
+  const timeStr = note.createdAt
+    ? new Date(note.createdAt).toLocaleString('en-AU',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})
+    : '';
+
+  return(
+    <div style={{
+      marginBottom:8, borderRadius:8, overflow:'hidden',
+      border:`1px solid ${note.resolved?T.border:note.urgent?T.danger+'55':dept.color+'44'}`,
+      background:note.resolved?T.surface2+'80':T.panel,
+      opacity:note.resolved?0.65:1,
+    }}>
+      {/* Top strip */}
+      <div style={{display:'flex',alignItems:'center',gap:6,padding:'7px 10px',
+        borderBottom:`1px solid ${T.rule}`,
+        background:note.resolved?'transparent':dept.color+'10'}}>
+        <span style={{fontSize:13}}>{dept.icon}</span>
+        <span style={{fontFamily:"'Geist Mono',monospace",fontSize:9,color:dept.color,fontWeight:600,letterSpacing:'0.05em'}}>
+          {dept.label.toUpperCase()}
+        </span>
+        {note.urgent&&<span style={{fontFamily:"'Geist Mono',monospace",fontSize:8,
+          color:T.danger,padding:'1px 5px',borderRadius:3,background:T.danger+'20',
+          border:`1px solid ${T.danger}44`}}>URGENT</span>}
+        {scene&&<span style={{fontFamily:"'Geist Mono',monospace",fontSize:9,
+          color:T.textDim,marginLeft:'auto'}}>{scene.id}</span>}
+        {!scene&&<div style={{flex:1}}/>}
+        <span style={{fontFamily:"'Geist Mono',monospace",fontSize:8,color:T.textDim}}>{timeStr}</span>
+      </div>
+
+      {/* Content */}
+      <div style={{padding:'8px 10px'}}>
+        <div style={{fontSize:13,color:note.resolved?T.textDim:T.text,lineHeight:1.5,
+          textDecoration:note.resolved?'line-through':'none',marginBottom:4}}>
+          {note.text}
+        </div>
+        {note.author&&<div style={{fontFamily:"'Geist Mono',monospace",fontSize:9,
+          color:T.textDim,marginBottom:4}}>- {note.author}</div>}
+
+        {/* Image thumbnail */}
+        {note.imageUrl&&(
+          <div style={{marginBottom:6}}>
+            <img src={note.imageUrl} alt="note"
+              onClick={()=>setShowImg(true)}
+              style={{maxHeight:120,maxWidth:'100%',borderRadius:5,cursor:'pointer',
+                border:`1px solid ${T.border}`,objectFit:'cover'}}/>
+          </div>
+        )}
+
+        {/* Actions */}
+        <div style={{display:'flex',gap:6,marginTop:4}}>
+          <button onClick={onResolve}
+            style={{padding:'3px 10px',borderRadius:4,fontSize:10,cursor:'pointer',
+              fontFamily:"'Geist Mono',monospace",
+              background:note.resolved?T.success+'20':T.chip,
+              border:`1px solid ${note.resolved?T.success+'55':T.border}`,
+              color:note.resolved?T.success:T.textMute}}>
+            {note.resolved?'✓ Resolved':'Mark resolved'}
+          </button>
+          <button onClick={onEdit}
+            style={{padding:'3px 10px',borderRadius:4,fontSize:10,cursor:'pointer',
+              background:'transparent',border:`1px solid ${T.border}`,color:T.textDim,
+              fontFamily:"'Geist Mono',monospace"}}>
+            Edit
+          </button>
+          <button onClick={onDelete}
+            style={{padding:'3px 8px',borderRadius:4,fontSize:10,cursor:'pointer',
+              background:'transparent',border:`1px solid ${T.danger}33`,color:T.danger,
+              fontFamily:"'Geist Mono',monospace",marginLeft:'auto'}}>
+            x
+          </button>
+        </div>
+      </div>
+
+      {/* Image lightbox */}
+      {showImg&&note.imageUrl&&(
+        <div onClick={()=>setShowImg(false)}
+          style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.9)',zIndex:9000,
+            display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
+          <img src={note.imageUrl} alt="note"
+            style={{maxWidth:'100%',maxHeight:'90vh',borderRadius:8,objectFit:'contain'}}/>
+          <button onClick={()=>setShowImg(false)}
+            style={{position:'absolute',top:16,right:16,background:'rgba(255,255,255,0.15)',
+              border:'none',borderRadius:'50%',width:36,height:36,color:'white',
+              fontSize:18,cursor:'pointer',display:'grid',placeItems:'center'}}>x</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NoteModal({note, scenes, onSave, onClose, mob}){
+  const [text, setText] = React.useState(note?.text||'');
+  const [dept, setDept] = React.useState(note?.dept||'general');
+  const [sceneId, setSceneId] = React.useState(note?.sceneId||'');
+  const [urgent, setUrgent] = React.useState(note?.urgent||false);
+  const [author, setAuthor] = React.useState(note?.author||'');
+  const [imageUrl, setImageUrl] = React.useState(note?.imageUrl||'');
+  const [imgLoading, setImgLoading] = React.useState(false);
+  const fileRef = React.useRef(null);
+
+  function handleImg(e){
+    const file = e.target.files[0];
+    if(!file) return;
+    setImgLoading(true);
+    const reader = new FileReader();
+    reader.onload = ev => { setImageUrl(ev.target.result); setImgLoading(false); };
+    reader.readAsDataURL(file);
+  }
+
+  function handleSubmit(){
+    if(!text.trim()) return;
+    onSave({text:text.trim(),dept,sceneId:sceneId||null,urgent,author:author.trim(),imageUrl});
+  }
+
+  const deptObj = NOTE_DEPTS.find(d=>d.id===dept)||NOTE_DEPTS[8];
+
+  return(
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.6)',zIndex:8000,
+      display:'flex',alignItems:mob?'flex-end':'center',justifyContent:'center'}}
+      onClick={e=>{if(e.target===e.currentTarget)onClose();}}>
+      <div style={{
+        background:T.panel,border:`1px solid ${T.borderHi}`,
+        borderRadius:mob?'14px 14px 0 0':14,
+        width:mob?'100%':520,maxHeight:mob?'92vh':'85vh',
+        display:'flex',flexDirection:'column',
+        boxShadow:'0 8px 40px rgba(0,0,0,0.4)',
+        overflow:'hidden',
+      }}>
+        {/* Modal header */}
+        <div style={{padding:'14px 16px',borderBottom:`1px solid ${T.rule}`,
+          display:'flex',alignItems:'center',gap:8,flexShrink:0}}>
+          <span style={{fontSize:16}}>{deptObj.icon}</span>
+          <span style={{fontFamily:"'Instrument Serif',serif",fontStyle:'italic',
+            fontSize:16,color:T.text,flex:1}}>
+            {note?'Edit Note':'New Note'}
+          </span>
+          <button onClick={onClose}
+            style={{color:T.textDim,fontSize:18,background:'transparent',border:'none',cursor:'pointer'}}>x</button>
+        </div>
+
+        <div style={{flex:1,overflow:'auto',padding:'14px 16px',display:'flex',flexDirection:'column',gap:12}}>
+
+          {/* Dept selector */}
+          <div>
+            <div style={{fontFamily:"'Geist Mono',monospace",fontSize:8,color:T.textDim,
+              letterSpacing:'0.1em',marginBottom:6}}>DEPARTMENT</div>
+            <div style={{display:'flex',flexWrap:'wrap',gap:5}}>
+              {NOTE_DEPTS.map(d=>(
+                <button key={d.id} onClick={()=>setDept(d.id)}
+                  style={{padding:'4px 10px',borderRadius:99,fontSize:10,cursor:'pointer',
+                    fontFamily:"'Geist Mono',monospace",
+                    background:dept===d.id?d.color+'33':'transparent',
+                    border:`1px solid ${dept===d.id?d.color:T.border}`,
+                    color:dept===d.id?d.color:T.textMute}}>
+                  {d.icon} {d.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Note text */}
+          <div>
+            <div style={{fontFamily:"'Geist Mono',monospace",fontSize:8,color:T.textDim,
+              letterSpacing:'0.1em',marginBottom:5}}>NOTE *</div>
+            <textarea value={text} onChange={e=>setText(e.target.value)}
+              placeholder="What happened? What needs to be fixed or noted?"
+              autoFocus rows={4}
+              style={{width:'100%',background:T.surface2,border:`1px solid ${T.border}`,
+                borderRadius:6,padding:'8px 10px',fontSize:13,color:T.text,
+                resize:'vertical',boxSizing:'border-box',lineHeight:1.5}}/>
+          </div>
+
+          {/* Scene + Author row */}
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+            <div>
+              <div style={{fontFamily:"'Geist Mono',monospace",fontSize:8,color:T.textDim,
+                letterSpacing:'0.1em',marginBottom:5}}>SCENE (optional)</div>
+              <select value={sceneId} onChange={e=>setSceneId(e.target.value)}
+                style={{width:'100%',background:T.surface2,border:`1px solid ${T.border}`,
+                  borderRadius:5,padding:'6px 8px',fontSize:11,color:T.text}}>
+                <option value="">No scene</option>
+                {scenes.map(s=>(
+                  <option key={s.id} value={s.id}>{s.id} {s.slug?.slice(0,24)}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <div style={{fontFamily:"'Geist Mono',monospace",fontSize:8,color:T.textDim,
+                letterSpacing:'0.1em',marginBottom:5}}>YOUR NAME</div>
+              <input value={author} onChange={e=>setAuthor(e.target.value)}
+                placeholder="Optional"
+                style={{width:'100%',background:T.surface2,border:`1px solid ${T.border}`,
+                  borderRadius:5,padding:'6px 8px',fontSize:11,color:T.text,boxSizing:'border-box'}}/>
+            </div>
+          </div>
+
+          {/* Urgent toggle */}
+          <div style={{display:'flex',alignItems:'center',gap:10}}>
+            <button onClick={()=>setUrgent(u=>!u)}
+              style={{display:'flex',alignItems:'center',gap:7,padding:'6px 12px',
+                borderRadius:6,cursor:'pointer',
+                background:urgent?T.danger+'20':'transparent',
+                border:`1px solid ${urgent?T.danger+'66':T.border}`,
+                color:urgent?T.danger:T.textMute,fontSize:11,
+                fontFamily:"'Geist Mono',monospace"}}>
+              <div style={{width:16,height:16,borderRadius:3,
+                background:urgent?T.danger:'transparent',
+                border:`1.5px solid ${urgent?T.danger:T.border}`,
+                display:'grid',placeItems:'center',flexShrink:0}}>
+                {urgent&&<span style={{fontSize:10,color:'#fff',fontWeight:700}}>!</span>}
+              </div>
+              URGENT / FIX IN POST
+            </button>
+          </div>
+
+          {/* Image upload */}
+          <div>
+            <div style={{fontFamily:"'Geist Mono',monospace",fontSize:8,color:T.textDim,
+              letterSpacing:'0.1em',marginBottom:5}}>PHOTO (optional)</div>
+            <input ref={fileRef} type="file" accept="image/*" capture="environment"
+              onChange={handleImg} style={{display:'none'}}/>
+            {imageUrl?(
+              <div style={{position:'relative',display:'inline-block'}}>
+                <img src={imageUrl} alt="note"
+                  style={{maxHeight:120,maxWidth:'100%',borderRadius:6,
+                    border:`1px solid ${T.border}`,objectFit:'cover',display:'block'}}/>
+                <button onClick={()=>setImageUrl('')}
+                  style={{position:'absolute',top:4,right:4,background:'rgba(0,0,0,0.6)',
+                    border:'none',borderRadius:'50%',width:22,height:22,color:'white',
+                    fontSize:12,cursor:'pointer',display:'grid',placeItems:'center'}}>x</button>
+              </div>
+            ):(
+              <button onClick={()=>fileRef.current?.click()}
+                disabled={imgLoading}
+                style={{padding:'8px 16px',background:T.chip,border:`1px dashed ${T.border}`,
+                  borderRadius:6,color:T.textMute,fontSize:11,cursor:'pointer',
+                  fontFamily:"'Geist Mono',monospace",display:'flex',alignItems:'center',gap:6}}>
+                {imgLoading?'Loading...':'📷 Add photo'}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div style={{padding:'10px 16px',borderTop:`1px solid ${T.rule}`,
+          display:'flex',gap:8,flexShrink:0}}>
+          <button onClick={onClose}
+            style={{flex:1,padding:'8px',border:`1px solid ${T.border}`,borderRadius:6,
+              color:T.textMute,fontSize:12,background:'transparent',cursor:'pointer'}}>
+            Cancel
+          </button>
+          <button onClick={handleSubmit} disabled={!text.trim()}
+            style={{flex:2,padding:'8px',background:text.trim()?T.accent:'transparent',
+              border:`1px solid ${text.trim()?T.accent:T.border}`,borderRadius:6,
+              color:text.trim()?'#0e0d0b':T.textDim,fontSize:12,fontWeight:600,
+              cursor:text.trim()?'pointer':'default',transition:'all 0.15s'}}>
+            {note?'Save changes':'Add Note'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 function DailyView(){
   const {proj,updateProj}=useProj();
   const t=useT();
@@ -3768,6 +4242,7 @@ function Shell({initProj,onBack,lang,setLang,dark,setDark}){
     {id:'breakdown',label:t.breakdown,icon:'◫'},
     {id:'continuity',label:t.continuity,icon:'⊡'},
     {id:'daily',label:t.daily,icon:'▤'},
+    {id:'notes',label:t.notes||'On Set',icon:'📋'},
   ];
 
   const totalShots=proj.scenes?.reduce((a,s)=>a+(s.shots?.length||0),0)||0;
@@ -3845,6 +4320,7 @@ function Shell({initProj,onBack,lang,setLang,dark,setDark}){
               {view==='breakdown'&&<BDView/>}
               {view==='continuity'&&<ContView/>}
               {view==='daily'&&<DailyView/>}
+              {view==='notes'&&<OnSetNotes/>}
             </div>
           </div>
 
