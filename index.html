@@ -1568,7 +1568,7 @@ function ClockPicker({value,onChange,onClose}){
 
   return(
     <div style={{position:'fixed',inset:0,zIndex:9000,display:'grid',placeItems:'center'}}
-      onClick={e=>{if(e.target===e.currentTarget)onClose();}}>
+      onClick={e=>{if(e.target===e.currentTarget)handleClose();}}>
       <div style={{background:T.panel,border:`1px solid ${T.borderHi}`,borderRadius:14,
         padding:'16px 20px',boxShadow:'0 8px 40px rgba(0,0,0,0.4)',width:280}}>
         {/* Display */}
@@ -1959,6 +1959,73 @@ function NoteModal({note, scenes, onSave, onClose, mob}){
   const [imgLoading, setImgLoading] = React.useState(false);
   const fileRef = React.useRef(null);
 
+  // Speech recognition
+  const [listening, setListening] = React.useState(false);
+  const [interimText, setInterimText] = React.useState('');
+  const [voiceLang, setVoiceLang] = React.useState(()=>localStorage.getItem('sb_voice_lang')||'en-AU');
+  const recogRef = React.useRef(null);
+  const speechSupported = typeof window !== 'undefined' && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window);
+
+  React.useEffect(()=>{ localStorage.setItem('sb_voice_lang', voiceLang); },[voiceLang]);
+
+  // Cleanup on unmount
+  React.useEffect(()=>{
+    return ()=>{ if(recogRef.current){ try{ recogRef.current.stop(); }catch(e){} } };
+  },[]);
+
+  function toggleListening(){
+    if(listening){
+      try{ recogRef.current?.stop(); }catch(e){}
+      setListening(false);
+      setInterimText('');
+      return;
+    }
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if(!SR) return;
+    const recog = new SR();
+    recog.lang = voiceLang;
+    recog.continuous = true;
+    recog.interimResults = true;
+    recog.maxAlternatives = 1;
+    recogRef.current = recog;
+
+    recog.onresult = (e)=>{
+      let interim = '';
+      let final = '';
+      for(let i = e.resultIndex; i < e.results.length; i++){
+        const t = e.results[i][0].transcript;
+        if(e.results[i].isFinal){ final += t + ' '; }
+        else { interim += t; }
+      }
+      if(final) setText(prev => (prev + (prev&&!prev.endsWith(' ')?' ':'') + final.trim() + ' ').trimStart());
+      setInterimText(interim);
+    };
+
+    recog.onerror = (e)=>{
+      console.warn('Speech error:', e.error);
+      if(e.error === 'not-allowed'){
+        alert('Microphone access denied. Please allow microphone in browser settings.');
+      }
+      setListening(false);
+      setInterimText('');
+    };
+
+    recog.onend = ()=>{
+      // Auto-restart if still in listening mode (iOS sometimes stops early)
+      if(recogRef.current && listening){
+        try{ recogRef.current.start(); }catch(e){ setListening(false); }
+      }
+    };
+
+    try{
+      recog.start();
+      setListening(true);
+      setInterimText('');
+    } catch(e){
+      console.warn('Speech start error:', e);
+    }
+  }
+
   function handleImg(e){
     const file = e.target.files[0];
     if(!file) return;
@@ -1969,8 +2036,14 @@ function NoteModal({note, scenes, onSave, onClose, mob}){
   }
 
   function handleSubmit(){
+    if(listening){ try{ recogRef.current?.stop(); }catch(e){} setListening(false); }
     if(!text.trim()) return;
     onSave({text:text.trim(),dept,sceneId:sceneId||null,urgent,author:author.trim(),imageUrl});
+  }
+
+  function handleClose(){
+    if(listening){ try{ recogRef.current?.stop(); }catch(e){} setListening(false); }
+    onClose();
   }
 
   const deptObj = NOTE_DEPTS.find(d=>d.id===dept)||NOTE_DEPTS[8];
@@ -1995,7 +2068,7 @@ function NoteModal({note, scenes, onSave, onClose, mob}){
             fontSize:16,color:T.text,flex:1}}>
             {note?'Edit Note':'New Note'}
           </span>
-          <button onClick={onClose}
+          <button onClick={handleClose}
             style={{color:T.textDim,fontSize:18,background:'transparent',border:'none',cursor:'pointer'}}>x</button>
         </div>
 
@@ -2019,16 +2092,57 @@ function NoteModal({note, scenes, onSave, onClose, mob}){
             </div>
           </div>
 
-          {/* Note text */}
+          {/* Note text + voice input */}
           <div>
-            <div style={{fontFamily:"'Geist Mono',monospace",fontSize:8,color:T.textDim,
-              letterSpacing:'0.1em',marginBottom:5}}>NOTE *</div>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:5}}>
+              <div style={{fontFamily:"'Geist Mono',monospace",fontSize:8,color:T.textDim,letterSpacing:'0.1em'}}>NOTE *</div>
+              <div style={{display:'flex',alignItems:'center',gap:5}}>
+                {/* Language selector */}
+                <select value={voiceLang} onChange={e=>setVoiceLang(e.target.value)}
+                  style={{background:T.surface2,border:`1px solid ${T.border}`,borderRadius:4,
+                    padding:'2px 5px',fontSize:9,color:T.textDim,fontFamily:"'Geist Mono',monospace"}}>
+                  <option value="en-AU">EN-AU</option>
+                  <option value="en-US">EN-US</option>
+                  <option value="zh-HK">粤语</option>
+                  <option value="zh-CN">普通话</option>
+                </select>
+                {/* Mic toggle button */}
+                {speechSupported&&(
+                  <button onClick={toggleListening}
+                    title={listening?'Stop recording':'Start voice input'}
+                    style={{padding:'4px 10px',borderRadius:5,fontSize:11,cursor:'pointer',
+                      display:'flex',alignItems:'center',gap:5,
+                      background:listening?T.danger+'22':'transparent',
+                      border:`1px solid ${listening?T.danger:T.border}`,
+                      color:listening?T.danger:T.textDim,
+                      fontFamily:"'Geist Mono',monospace",
+                      transition:'all 0.15s'}}>
+                    <span style={{fontSize:14,animation:listening?'pulse 1s infinite':undefined}}>🎙</span>
+                    <span style={{fontSize:9}}>{listening?'STOP':'DICTATE'}</span>
+                  </button>
+                )}
+              </div>
+            </div>
+            {listening&&(
+              <div style={{padding:'5px 10px',marginBottom:5,borderRadius:5,
+                background:T.danger+'10',border:`1px solid ${T.danger}33`,
+                display:'flex',alignItems:'center',gap:6}}>
+                <div style={{width:7,height:7,borderRadius:'50%',background:T.danger,
+                  animation:'pulse 1s infinite',flexShrink:0}}/>
+                <span style={{fontFamily:"'Geist Mono',monospace",fontSize:9,color:T.danger}}>
+                  RECORDING... speak now
+                </span>
+                {interimText&&<span style={{fontSize:11,color:T.textDim,fontStyle:'italic',flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{interimText}</span>}
+              </div>
+            )}
             <textarea value={text} onChange={e=>setText(e.target.value)}
-              placeholder="What happened? What needs to be fixed or noted?"
+              placeholder={speechSupported?"What happened? Tap DICTATE to use voice...":"What happened? What needs to be fixed or noted?"}
               autoFocus rows={4}
-              style={{width:'100%',background:T.surface2,border:`1px solid ${T.border}`,
+              style={{width:'100%',background:T.surface2,
+                border:`1px solid ${listening?T.danger+'55':T.border}`,
                 borderRadius:6,padding:'8px 10px',fontSize:13,color:T.text,
-                resize:'vertical',boxSizing:'border-box',lineHeight:1.5}}/>
+                resize:'vertical',boxSizing:'border-box',lineHeight:1.5,
+                transition:'border-color 0.15s'}}/>
           </div>
 
           {/* Scene + Author row */}
@@ -2105,7 +2219,7 @@ function NoteModal({note, scenes, onSave, onClose, mob}){
         {/* Footer */}
         <div style={{padding:'10px 16px',borderTop:`1px solid ${T.rule}`,
           display:'flex',gap:8,flexShrink:0}}>
-          <button onClick={onClose}
+          <button onClick={handleClose}
             style={{flex:1,padding:'8px',border:`1px solid ${T.border}`,borderRadius:6,
               color:T.textMute,fontSize:12,background:'transparent',cursor:'pointer'}}>
             Cancel
