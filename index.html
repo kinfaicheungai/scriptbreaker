@@ -4,17 +4,6 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
 <title>New Script Breaker</title>
-<!-- Home-screen app icon & PWA -->
-<link rel="apple-touch-icon" href="apple-touch-icon.png"/>
-<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png"/>
-<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png"/>
-<link rel="icon" type="image/png" sizes="512x512" href="icon-512.png"/>
-<link rel="manifest" href="manifest.webmanifest"/>
-<meta name="apple-mobile-web-app-capable" content="yes"/>
-<meta name="mobile-web-app-capable" content="yes"/>
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
-<meta name="apple-mobile-web-app-title" content="Script Breaker"/>
-<meta name="theme-color" content="#0e0d0b"/>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&family=Courier+Prime:ital,wght@0,400;0,700;1,400&display=swap"/>
@@ -653,7 +642,769 @@ function YtThumbnail({ytId, url}) {
   );
 }
 
+/* ═══════════════════════════════════════════════════════════
+   GALLERY IndexedDB - local storage for batch-imported shot
+   reference images, kept separate from proj JSON so Export/
+   Drive sync stays lightweight. Scoped per project via proj._id.
+═══════════════════════════════════════════════════════════ */
+const GALLERY_DB_NAME = 'sb_gallery';
+const GALLERY_STORE = 'images';
+
+function openGalleryDB(){
+  return new Promise((resolve, reject)=>{
+    const req = indexedDB.open(GALLERY_DB_NAME, 1);
+    req.onupgradeneeded = ()=>{
+      const db = req.result;
+      if(!db.objectStoreNames.contains(GALLERY_STORE)){
+        const store = db.createObjectStore(GALLERY_STORE, {keyPath:'key'});
+        store.createIndex('projId', 'projId', {unique:false});
+      }
+    };
+    req.onsuccess = ()=>resolve(req.result);
+    req.onerror = ()=>reject(req.error);
+  });
+}
+
+async function galleryPutImage(projId, item){
+  // item: {name, sceneNum, shotNum, desc, dataUrl}
+  const db = await openGalleryDB();
+  const key = projId + '::' + item.name;
+  return new Promise((resolve, reject)=>{
+    const tx = db.transaction(GALLERY_STORE, 'readwrite');
+    tx.objectStore(GALLERY_STORE).put({ key, projId, ...item });
+    tx.oncomplete = ()=>resolve();
+    tx.onerror = ()=>reject(tx.error);
+  });
+}
+
+async function galleryGetAll(projId){
+  const db = await openGalleryDB();
+  return new Promise((resolve, reject)=>{
+    const tx = db.transaction(GALLERY_STORE, 'readonly');
+    const idx = tx.objectStore(GALLERY_STORE).index('projId');
+    const req = idx.getAll(projId);
+    req.onsuccess = ()=>resolve(req.result || []);
+    req.onerror = ()=>reject(req.error);
+  });
+}
+
+async function galleryDeleteImage(projId, name){
+  const db = await openGalleryDB();
+  const key = projId + '::' + name;
+  return new Promise((resolve, reject)=>{
+    const tx = db.transaction(GALLERY_STORE, 'readwrite');
+    tx.objectStore(GALLERY_STORE).delete(key);
+    tx.oncomplete = ()=>resolve();
+    tx.onerror = ()=>reject(tx.error);
+  });
+}
+
+async function galleryClearProject(projId){
+  const all = await galleryGetAll(projId);
+  const db = await openGalleryDB();
+  return new Promise((resolve, reject)=>{
+    const tx = db.transaction(GALLERY_STORE, 'readwrite');
+    const store = tx.objectStore(GALLERY_STORE);
+    all.forEach(item => store.delete(item.key));
+    tx.oncomplete = ()=>resolve();
+    tx.onerror = ()=>reject(tx.error);
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════
+   FILENAME PARSER - same logic as standalone Shot Reference
+   Viewer, with configurable rules persisted to localStorage
+═══════════════════════════════════════════════════════════ */
+const GALLERY_RULES_KEY = 'sb_gallery_parse_rules';
+const GALLERY_DEFAULT_RULES = {
+  delimiter: '_',
+  prefixes: 'S, Scene, EP',
+  groupSegment: 1,
+  sortSegment: 2,
+};
+
+function loadGalleryRules(){
+  try {
+    const saved = localStorage.getItem(GALLERY_RULES_KEY);
+    if(saved) return { ...GALLERY_DEFAULT_RULES, ...JSON.parse(saved) };
+  } catch(e){}
+  return { ...GALLERY_DEFAULT_RULES };
+}
+
+function saveGalleryRules(rules){
+  try { localStorage.setItem(GALLERY_RULES_KEY, JSON.stringify(rules)); }
+  catch(e){ console.warn('Could not save gallery rules', e); }
+}
+
+function parseGalleryFilename(name, rules){
+  rules = rules || GALLERY_DEFAULT_RULES;
+  const base = name.replace(/\.[^.]+$/, '');
+
+  let s = base;
+  const prefixList = (rules.prefixes||'').split(',').map(p=>p.trim()).filter(Boolean);
+  for(const prefix of prefixList){
+    const re = new RegExp('^' + prefix.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + '\\s*', 'i');
+    if(re.test(s)){ s = s.replace(re, ''); break; }
+  }
+
+  const delim = rules.delimiter || '_';
+  const delimEscaped = delim.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+  const segments = s.split(new RegExp(delimEscaped + '+')).filter(seg => seg !== '');
+
+  const gIdx = (rules.groupSegment||1) - 1;
+  const sIdx = (rules.sortSegment||2) - 1;
+
+  const groupRaw = segments[gIdx];
+  const sortRaw = segments[sIdx];
+  const groupNum = groupRaw!=null ? parseInt(groupRaw, 10) : NaN;
+  const sortNum = sortRaw!=null ? parseInt(sortRaw, 10) : NaN;
+
+  if(!isNaN(groupNum)){
+    const descSegments = segments.filter((_, i) => i!==gIdx && i!==sIdx);
+    const desc = descSegments.join(' ').trim();
+    return { sceneNum: groupNum, shotNum: isNaN(sortNum)?0:sortNum, desc, raw: name, valid: true };
+  }
+  return { sceneNum: null, shotNum: 0, desc: base, raw: name, valid: false };
+}
+
+// Compress image client-side before storing (keeps IndexedDB usage reasonable)
+function compressGalleryImage(file, maxDim, quality){
+  return new Promise((resolve, reject)=>{
+    const img = new Image();
+    const reader = new FileReader();
+    reader.onload = (e)=>{ img.src = e.target.result; };
+    reader.onerror = reject;
+    img.onload = ()=>{
+      let { width, height } = img;
+      if(width > maxDim || height > maxDim){
+        if(width > height){ height = Math.round(height * maxDim / width); width = maxDim; }
+        else { width = Math.round(width * maxDim / height); height = maxDim; }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width; canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+const GALLERY_IMG_EXT = /\.(jpg|jpeg|png|gif|webp|heic|bmp)$/i;
+
+/* ═══════════════════════════════════════════════════════════
+   SHOT GALLERY TAB - bulk-imported reference images, scoped
+   to the current project, filterable by scene number or
+   shoot location (reuses proj.locations/scene.locationId)
+═══════════════════════════════════════════════════════════ */
+function ShotGalleryTab(){
+  const {proj} = useProj();
+  const mob = useMobile();
+  const projId = proj._id || 'default';
+
+  const [images, setImages] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [filterLoc, setFilterLoc] = React.useState('all');
+  const [search, setSearch] = React.useState('');
+  const [lightbox, setLightbox] = React.useState(null);
+  const [showUpload, setShowUpload] = React.useState(false);
+  const [showRules, setShowRules] = React.useState(false);
+  const [rules, setRules] = React.useState(loadGalleryRules);
+
+  // Load images for this project from IndexedDB
+  const reload = React.useCallback(()=>{
+    setLoading(true);
+    galleryGetAll(projId).then(list=>{
+      list.sort((a,b)=>{
+        const sa = a.sceneNum ?? 99999, sb = b.sceneNum ?? 99999;
+        if(sa !== sb) return sa - sb;
+        return (a.shotNum||0) - (b.shotNum||0);
+      });
+      setImages(list);
+      setLoading(false);
+    }).catch(()=>setLoading(false));
+  },[projId]);
+
+  React.useEffect(()=>{ reload(); },[reload]);
+
+  // Map scene number -> locationId, so gallery images (which only know
+  // their scene number) can be filtered by the same locations used
+  // elsewhere in ScriptBreaker
+  const sceneToLoc = React.useMemo(()=>{
+    const map = {};
+    (proj.scenes||[]).forEach(s=>{
+      const num = parseInt(String(s.id).replace(/\D/g,''), 10);
+      if(!isNaN(num)) map[num] = s.locationId;
+    });
+    return map;
+  },[proj.scenes]);
+
+  const filtered = React.useMemo(()=>{
+    let list = images;
+    if(filterLoc!=='all'){
+      list = list.filter(img => sceneToLoc[img.sceneNum] === filterLoc);
+    }
+    if(search.trim()){
+      const q = search.trim().toLowerCase();
+      list = list.filter(img =>
+        String(img.sceneNum).includes(q) ||
+        (img.desc||'').toLowerCase().includes(q) ||
+        (img.raw||'').toLowerCase().includes(q)
+      );
+    }
+    return list;
+  },[images, filterLoc, search, sceneToLoc]);
+
+  const sceneNumbers = React.useMemo(()=>{
+    const set = new Set(images.map(i=>i.sceneNum).filter(n=>n!=null));
+    return Array.from(set).sort((a,b)=>a-b);
+  },[images]);
+
+  async function handleDelete(name){
+    await galleryDeleteImage(projId, name);
+    reload();
+  }
+
+  async function handleClearAll(){
+    await galleryClearProject(projId);
+    reload();
+  }
+
+  return (
+    <div style={{height:'100%',display:'flex',flexDirection:'column',overflow:'hidden'}}>
+
+      {/* Header */}
+      <div style={{padding:mob?'6px 8px':'6px 20px',borderBottom:`1px solid ${T.rule}`,
+        display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+        <div style={{display:'flex',gap:6,alignItems:'center',overflowX:'auto',flex:1}}>
+          {[{id:'all',name:'All'},...(proj.locations||[])].map(l=>(
+            <button key={l.id} onClick={()=>setFilterLoc(l.id)}
+              style={{padding:'3px 10px',borderRadius:4,fontSize:10,
+                fontFamily:"'Geist Mono',monospace",
+                background:filterLoc===l.id?T.accent+'22':T.chip,
+                color:filterLoc===l.id?T.accent:T.textMute,
+                border:`1px solid ${filterLoc===l.id?T.accent+'44':T.border}`,
+                whiteSpace:'nowrap'}}>
+              {(l.name||'All').toUpperCase()}
+            </button>
+          ))}
+        </div>
+        <Mono s={{color:T.textDim,fontSize:9}}>{images.length} IMAGES</Mono>
+      </div>
+
+      {/* Search + scene strip + actions */}
+      <div style={{padding:mob?'6px 8px':'6px 20px',borderBottom:`1px solid ${T.rule}`,
+        display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+        <input value={search} onChange={e=>setSearch(e.target.value)}
+          placeholder="Search scene, description..."
+          style={{flex:1,minWidth:140,background:T.surface2,border:`1px solid ${T.border}`,
+            borderRadius:5,padding:'5px 10px',fontSize:11,color:T.text}}/>
+        <button onClick={()=>setShowRules(true)}
+          style={{padding:'5px 10px',background:'transparent',border:`1px solid ${T.border}`,
+            borderRadius:5,color:T.textDim,fontSize:10,fontFamily:"'Geist Mono',monospace"}}>
+          ⚙ Rules
+        </button>
+        <button onClick={()=>setShowUpload(true)}
+          style={{padding:'5px 14px',background:T.accent,border:'none',borderRadius:5,
+            color:'#0e0d0b',fontSize:11,fontWeight:600}}>
+          + Upload
+        </button>
+      </div>
+
+      {/* Scene quick-jump */}
+      {sceneNumbers.length>0 && (
+        <div style={{padding:mob?'6px 8px':'6px 20px',borderBottom:`1px solid ${T.rule}`,
+          display:'flex',gap:5,overflowX:'auto'}}>
+          {sceneNumbers.map(n=>(
+            <button key={n} onClick={()=>setSearch(String(n))}
+              style={{padding:'2px 9px',borderRadius:99,fontSize:9,whiteSpace:'nowrap',
+                background:'transparent',border:`1px solid ${T.border}`,color:T.textMute,
+                fontFamily:"'Geist Mono',monospace"}}>
+              S{n}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Grid */}
+      <div style={{flex:1,overflow:'auto',padding:mob?10:'14px 20px'}}>
+        {loading && (
+          <div style={{textAlign:'center',padding:50,color:T.textDim,fontSize:11}}>Loading...</div>
+        )}
+        {!loading && filtered.length===0 && (
+          <Empty icon="🎞" title={images.length===0?"No gallery images yet":"No matches"}
+            sub={images.length===0?"Tap + Upload to batch-import shot references":"Try a different filter or search"}/>
+        )}
+        <div style={{display:'grid',gridTemplateColumns:mob?'repeat(2,1fr)':'repeat(auto-fill,minmax(170px,1fr))',gap:mob?8:12}}>
+          {filtered.map((img, idx)=>(
+            <GalleryThumb key={img.key} img={img} onClick={()=>setLightbox(idx)}/>
+          ))}
+        </div>
+      </div>
+
+      {lightbox!==null && (
+        <GalleryLightbox images={filtered} index={lightbox}
+          onClose={()=>setLightbox(null)} onNav={setLightbox}
+          onDelete={handleDelete} mob={mob}/>
+      )}
+
+      {showUpload && (
+        <GalleryUploadModal projId={projId} rules={rules}
+          onClose={()=>{setShowUpload(false); reload();}}
+          onClearAll={handleClearAll} mob={mob}/>
+      )}
+
+      {showRules && (
+        <GalleryRulesModal rules={rules}
+          onSave={(r)=>{setRules(r); saveGalleryRules(r); reload();}}
+          onClose={()=>setShowRules(false)}/>
+      )}
+    </div>
+  );
+}
+
+function GalleryThumb({img, onClick}){
+  return (
+    <div onClick={onClick} style={{cursor:'pointer'}}>
+      <div style={{position:'relative',aspectRatio:'16/9',borderRadius:7,overflow:'hidden',
+        background:T.surface2,border:`1px solid ${T.border}`}}>
+        <img src={img.dataUrl} alt={img.desc} loading="lazy"
+          style={{width:'100%',height:'100%',objectFit:'cover'}}/>
+        <div style={{position:'absolute',top:5,left:5,background:'rgba(14,13,11,0.85)',
+          borderRadius:4,padding:'2px 6px',fontSize:9,color:T.accent,fontWeight:600}}>
+          S{img.sceneNum}{img.shotNum?'.'+img.shotNum:''}
+        </div>
+      </div>
+      <div style={{fontSize:10,color:T.textMute,marginTop:4,overflow:'hidden',
+        textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+        {img.desc || 'untitled'}
+      </div>
+    </div>
+  );
+}
+
+function GalleryLightbox({images, index, onClose, onNav, onDelete, mob}){
+  const img = images[index];
+  const touchStart = React.useRef(null);
+
+  React.useEffect(()=>{
+    function onKey(e){
+      if(e.key==='Escape') onClose();
+      if(e.key==='ArrowLeft' && index>0) onNav(index-1);
+      if(e.key==='ArrowRight' && index<images.length-1) onNav(index+1);
+    }
+    window.addEventListener('keydown', onKey);
+    return ()=>window.removeEventListener('keydown', onKey);
+  },[index, images.length]);
+
+  function onTouchStart(e){ touchStart.current = e.touches[0].clientX; }
+  function onTouchEnd(e){
+    if(touchStart.current==null) return;
+    const dx = e.changedTouches[0].clientX - touchStart.current;
+    if(dx > 60 && index>0) onNav(index-1);
+    if(dx < -60 && index<images.length-1) onNav(index+1);
+    touchStart.current = null;
+  }
+
+  if(!img) return null;
+
+  return (
+    <div style={{position:'fixed',inset:0,background:'rgba(8,7,6,0.97)',zIndex:9000,
+      display:'flex',flexDirection:'column'}}
+      onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+      <div style={{flexShrink:0,padding:mob?'10px 12px':'14px 24px',
+        paddingTop: mob ? 'max(10px,env(safe-area-inset-top))' : undefined,
+        display:'flex',alignItems:'center',gap:10}}>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontSize:11,color:T.accent,fontWeight:600}}>
+            SCENE {img.sceneNum}{img.shotNum?` · SHOT ${img.shotNum}`:''}
+          </div>
+          <div style={{fontSize:mob?11:13,color:T.textMute,marginTop:2,overflow:'hidden',
+            textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+            {img.desc||'untitled'}
+          </div>
+        </div>
+        <div style={{fontSize:10,color:T.textDim,flexShrink:0}}>{index+1}/{images.length}</div>
+        <button onClick={()=>{onDelete(img.name); onClose();}}
+          style={{flexShrink:0,width:32,height:32,borderRadius:'50%',background:T.surface2,
+            border:`1px solid ${T.danger}44`,color:T.danger,fontSize:13,
+            display:'grid',placeItems:'center'}}>🗑</button>
+        <button onClick={onClose}
+          style={{flexShrink:0,width:32,height:32,borderRadius:'50%',background:T.surface2,
+            border:`1px solid ${T.border}`,color:T.textMute,fontSize:15,
+            display:'grid',placeItems:'center'}}>x</button>
+      </div>
+
+      <div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',
+        position:'relative',overflow:'hidden',padding: mob?'0 8px':'0 80px'}}>
+        {!mob && index>0 && (
+          <button onClick={()=>onNav(index-1)}
+            style={{position:'absolute',left:16,top:'50%',transform:'translateY(-50%)',
+              width:44,height:44,borderRadius:'50%',background:T.surface2,
+              border:`1px solid ${T.border}`,color:T.text,fontSize:18,
+              display:'grid',placeItems:'center'}}>‹</button>
+        )}
+        <img src={img.dataUrl} alt={img.desc}
+          style={{maxWidth:'100%',maxHeight:'100%',objectFit:'contain',borderRadius:4}}/>
+        {!mob && index<images.length-1 && (
+          <button onClick={()=>onNav(index+1)}
+            style={{position:'absolute',right:16,top:'50%',transform:'translateY(-50%)',
+              width:44,height:44,borderRadius:'50%',background:T.surface2,
+              border:`1px solid ${T.border}`,color:T.text,fontSize:18,
+              display:'grid',placeItems:'center'}}>›</button>
+        )}
+      </div>
+
+      {mob && (
+        <div style={{flexShrink:0,padding:'10px 16px',
+          paddingBottom:'max(10px,env(safe-area-inset-bottom))',display:'flex',gap:10}}>
+          <button onClick={()=>index>0&&onNav(index-1)} disabled={index===0}
+            style={{flex:1,padding:'10px 0',background:T.surface2,border:`1px solid ${T.border}`,
+              borderRadius:8,color:index===0?T.textDim:T.text,fontSize:13}}>‹ Prev</button>
+          <button onClick={()=>index<images.length-1&&onNav(index+1)} disabled={index===images.length-1}
+            style={{flex:1,padding:'10px 0',background:T.surface2,border:`1px solid ${T.border}`,
+              borderRadius:8,color:index===images.length-1?T.textDim:T.text,fontSize:13}}>Next ›</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════
+   GALLERY UPLOAD MODAL - batch import with filename parsing
+═══════════════════════════════════════════════════════════ */
+function GalleryUploadModal({projId, rules, onClose, onClearAll, mob}){
+  const [files, setFiles] = React.useState([]);
+  const [dragOver, setDragOver] = React.useState(false);
+  const [uploading, setUploading] = React.useState(false);
+  const [done, setDone] = React.useState(0);
+  const fileInputRef = React.useRef(null);
+
+  function handleFiles(fileList){
+    const arr = Array.from(fileList).filter(f => GALLERY_IMG_EXT.test(f.name));
+    const parsed = arr.map(f => ({
+      file: f,
+      parsed: parseGalleryFilename(f.name, rules),
+      status: 'pending',
+      previewUrl: URL.createObjectURL(f),
+    }));
+    setFiles(prev => [...prev, ...parsed]);
+  }
+
+  function onDrop(e){ e.preventDefault(); setDragOver(false); handleFiles(e.dataTransfer.files); }
+  function removeFile(idx){ setFiles(prev => prev.filter((_,i)=>i!==idx)); }
+  function updateParsed(idx, patch){
+    setFiles(prev => prev.map((f,i)=> i===idx ? {...f, parsed:{...f.parsed,...patch}} : f));
+  }
+
+  async function uploadAll(){
+    setUploading(true); setDone(0);
+    for(let i=0; i<files.length; i++){
+      const item = files[i];
+      if(item.status==='done'){ setDone(d=>d+1); continue; }
+      setFiles(prev => prev.map((f,idx)=> idx===i ? {...f,status:'uploading'} : f));
+      try {
+        const dataUrl = await compressGalleryImage(item.file, 1400, 0.82);
+        await galleryPutImage(projId, {
+          name: item.file.name,
+          sceneNum: item.parsed.sceneNum,
+          shotNum: item.parsed.shotNum,
+          desc: item.parsed.desc,
+          raw: item.file.name,
+          dataUrl,
+        });
+        setFiles(prev => prev.map((f,idx)=> idx===i ? {...f,status:'done'} : f));
+        setDone(d=>d+1);
+      } catch(e){
+        console.error('Gallery upload error:', e);
+        setFiles(prev => prev.map((f,idx)=> idx===i ? {...f,status:'error'} : f));
+      }
+    }
+    setUploading(false);
+  }
+
+  const allDone = files.length>0 && files.every(f=>f.status==='done');
+  const invalidCount = files.filter(f=>!f.parsed.valid).length;
+
+  return (
+    <div style={{position:'fixed',inset:0,background:'rgba(8,7,6,0.8)',zIndex:9500,
+      display:'flex',alignItems:mob?'flex-end':'center',justifyContent:'center'}}
+      onClick={e=>{if(e.target===e.currentTarget && !uploading)onClose();}}>
+      <div style={{background:T.panel,border:`1px solid ${T.borderHi}`,
+        borderRadius:mob?'16px 16px 0 0':14,width:mob?'100%':620,
+        maxHeight:mob?'90vh':'82vh',display:'flex',flexDirection:'column',overflow:'hidden'}}>
+
+        <div style={{padding:'14px 18px',borderBottom:`1px solid ${T.rule}`,
+          display:'flex',alignItems:'center',gap:10,flexShrink:0}}>
+          <span style={{fontFamily:"'Instrument Serif',serif",fontStyle:'italic',
+            fontSize:17,color:T.text,flex:1}}>Upload Shot References</span>
+          {!uploading && <button onClick={onClose}
+            style={{color:T.textDim,fontSize:17,background:'transparent',border:'none'}}>x</button>}
+        </div>
+
+        <div style={{flex:1,overflow:'auto',padding:'14px 18px'}}>
+          {files.length===0 && (
+            <div onDragOver={e=>{e.preventDefault();setDragOver(true);}}
+              onDragLeave={()=>setDragOver(false)} onDrop={onDrop}
+              onClick={()=>fileInputRef.current?.click()}
+              style={{border:`2px dashed ${dragOver?T.accent:T.border}`,borderRadius:10,
+                padding:mob?'36px 14px':'52px 18px',textAlign:'center',cursor:'pointer',
+                background:dragOver?T.accent+'10':'transparent'}}>
+              <div style={{fontSize:32,opacity:0.3,marginBottom:8}}>📁</div>
+              <div style={{fontSize:12,color:T.textMute}}>
+                {mob ? 'Tap to select photos' : 'Drag images here or click to browse'}
+              </div>
+              <div style={{fontSize:9,color:T.textDim,marginTop:6}}>
+                Filenames like "60_3_description.png" auto-detect scene + shot
+              </div>
+            </div>
+          )}
+          <input ref={fileInputRef} type="file" accept="image/*" multiple
+            onChange={e=>handleFiles(e.target.files)} style={{display:'none'}}/>
+
+          {files.length>0 && (
+            <>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
+                <div style={{fontSize:10,color:T.textMute}}>
+                  {files.length} files{invalidCount>0 && <span style={{color:T.danger}}> · {invalidCount} need review</span>}
+                </div>
+                {!uploading && <button onClick={()=>fileInputRef.current?.click()}
+                  style={{fontSize:10,color:T.info,background:'transparent',border:'none'}}>+ Add more</button>}
+              </div>
+              <div style={{display:'flex',flexDirection:'column',gap:5}}>
+                {files.map((item, idx)=>(
+                  <GalleryFileRow key={idx} item={item}
+                    onRemove={()=>removeFile(idx)}
+                    onUpdate={(p)=>updateParsed(idx,p)}
+                    disabled={uploading}/>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+
+        {files.length>0 && (
+          <div style={{padding:'12px 18px',borderTop:`1px solid ${T.rule}`,
+            display:'flex',alignItems:'center',gap:10,flexShrink:0}}>
+            {uploading && <div style={{flex:1,fontSize:10,color:T.textMute}}>Uploading {done}/{files.length}...</div>}
+            {!uploading && !allDone && <div style={{flex:1,fontSize:10,color:T.textDim}}>Ready to upload {files.length} image{files.length>1?'s':''}</div>}
+            {allDone && <div style={{flex:1,fontSize:10,color:T.success}}>✓ All uploaded</div>}
+            {!allDone ? (
+              <button onClick={uploadAll} disabled={uploading||files.length===0}
+                style={{padding:'8px 18px',background:T.accent,border:'none',borderRadius:6,
+                  color:'#0e0d0b',fontSize:11,fontWeight:600,opacity:uploading?0.6:1}}>
+                {uploading?'Uploading...':`Upload ${files.length}`}
+              </button>
+            ) : (
+              <button onClick={onClose}
+                style={{padding:'8px 18px',background:T.accent,border:'none',borderRadius:6,
+                  color:'#0e0d0b',fontSize:11,fontWeight:600}}>Done</button>
+            )}
+          </div>
+        )}
+
+        {files.length===0 && (
+          <div style={{padding:'10px 18px',borderTop:`1px solid ${T.rule}`,flexShrink:0}}>
+            <button onClick={()=>{ if(confirm('Delete all gallery images for this project? This cannot be undone.')) onClearAll(); }}
+              style={{fontSize:10,color:T.danger,background:'transparent',border:'none'}}>
+              Clear all gallery images for this project
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function GalleryFileRow({item, onRemove, onUpdate, disabled}){
+  const [editing, setEditing] = React.useState(false);
+  const p = item.parsed;
+  const statusIcon = {
+    pending: null,
+    uploading: <div style={{width:11,height:11,border:`2px solid ${T.info}`,borderTopColor:'transparent',borderRadius:'50%'}}/>,
+    done: <span style={{color:T.success,fontSize:12}}>✓</span>,
+    error: <span style={{color:T.danger,fontSize:12}}>✕</span>,
+  }[item.status];
+
+  return (
+    <div style={{display:'flex',alignItems:'center',gap:8,padding:'6px 8px',
+      background:T.surface2,border:`1px solid ${p.valid?T.border:T.danger}`,borderRadius:7}}>
+      <img src={item.previewUrl} alt="" style={{width:38,height:38,objectFit:'cover',borderRadius:4,flexShrink:0}}/>
+      <div style={{flex:1,minWidth:0}}>
+        {!editing ? (
+          <>
+            <div style={{fontSize:10,fontWeight:600,color:p.valid?T.accent:T.danger}}>
+              {p.valid ? `S${p.sceneNum}${p.shotNum?'.'+p.shotNum:''}` : 'Unparsed - tap to set'}
+            </div>
+            <div style={{fontSize:9,color:T.textDim,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+              {p.desc || item.file.name}
+            </div>
+          </>
+        ) : (
+          <div style={{display:'flex',gap:5}}>
+            <input type="number" placeholder="Scene" value={p.sceneNum||''}
+              onChange={e=>onUpdate({sceneNum:e.target.value?parseInt(e.target.value):null,valid:true})}
+              style={{width:50,background:T.bg,border:`1px solid ${T.border}`,borderRadius:4,padding:'3px 5px',fontSize:10,color:T.text}}/>
+            <input type="number" placeholder="Shot" value={p.shotNum||''}
+              onChange={e=>onUpdate({shotNum:e.target.value?parseInt(e.target.value):0})}
+              style={{width:42,background:T.bg,border:`1px solid ${T.border}`,borderRadius:4,padding:'3px 5px',fontSize:10,color:T.text}}/>
+            <input type="text" placeholder="Description" value={p.desc||''}
+              onChange={e=>onUpdate({desc:e.target.value})}
+              style={{flex:1,background:T.bg,border:`1px solid ${T.border}`,borderRadius:4,padding:'3px 5px',fontSize:10,color:T.text,minWidth:0}}/>
+          </div>
+        )}
+      </div>
+      {statusIcon}
+      {!disabled && (
+        <>
+          <button onClick={()=>setEditing(e=>!e)} style={{color:T.textDim,fontSize:10,background:'transparent',border:'none',flexShrink:0}}>{editing?'✓':'✎'}</button>
+          <button onClick={onRemove} style={{color:T.textDim,fontSize:13,background:'transparent',border:'none',flexShrink:0}}>x</button>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════
+   GALLERY RULES MODAL - configure filename parsing
+═══════════════════════════════════════════════════════════ */
+function GalleryRulesModal({rules, onSave, onClose}){
+  const [delimiter, setDelimiter] = React.useState(rules.delimiter);
+  const [prefixes, setPrefixes] = React.useState(rules.prefixes);
+  const [groupSegment, setGroupSegment] = React.useState(rules.groupSegment);
+  const [sortSegment, setSortSegment] = React.useState(rules.sortSegment);
+  const [sample, setSample] = React.useState('60_3_cu_hand_on_static.png');
+
+  const draftRules = { delimiter, prefixes, groupSegment:Number(groupSegment), sortSegment:Number(sortSegment) };
+  const preview = parseGalleryFilename(sample, draftRules);
+
+  function handleSave(){ onSave(draftRules); onClose(); }
+  function handleReset(){
+    setDelimiter(GALLERY_DEFAULT_RULES.delimiter);
+    setPrefixes(GALLERY_DEFAULT_RULES.prefixes);
+    setGroupSegment(GALLERY_DEFAULT_RULES.groupSegment);
+    setSortSegment(GALLERY_DEFAULT_RULES.sortSegment);
+  }
+
+  return (
+    <div style={{position:'fixed',inset:0,background:'rgba(8,7,6,0.8)',zIndex:9600,
+      display:'flex',alignItems:'center',justifyContent:'center',padding:16}}
+      onClick={e=>{if(e.target===e.currentTarget)onClose();}}>
+      <div style={{background:T.panel,border:`1px solid ${T.borderHi}`,borderRadius:12,
+        width:'100%',maxWidth:480,maxHeight:'85vh',display:'flex',flexDirection:'column',overflow:'hidden'}}>
+
+        <div style={{padding:'14px 18px',borderBottom:`1px solid ${T.rule}`,
+          display:'flex',alignItems:'center',gap:10,flexShrink:0}}>
+          <span style={{fontFamily:"'Instrument Serif',serif",fontStyle:'italic',
+            fontSize:16,color:T.text,flex:1}}>Filename Parsing Rules</span>
+          <button onClick={onClose} style={{color:T.textDim,fontSize:17,background:'transparent',border:'none'}}>x</button>
+        </div>
+
+        <div style={{flex:1,overflow:'auto',padding:'14px 18px',display:'flex',flexDirection:'column',gap:14}}>
+          <div style={{fontSize:10,color:T.textMute,lineHeight:1.5}}>
+            Configure how gallery filenames map to scene/shot numbers.
+          </div>
+
+          <div>
+            <div style={{fontSize:9,color:T.textDim,letterSpacing:'0.06em',marginBottom:5}}>SEGMENT DELIMITER</div>
+            <input value={delimiter} onChange={e=>setDelimiter(e.target.value)} placeholder="_"
+              style={{width:70,background:T.surface2,border:`1px solid ${T.border}`,borderRadius:5,
+                padding:'6px 9px',fontSize:12,color:T.text,textAlign:'center'}}/>
+          </div>
+
+          <div>
+            <div style={{fontSize:9,color:T.textDim,letterSpacing:'0.06em',marginBottom:5}}>PREFIXES TO IGNORE</div>
+            <input value={prefixes} onChange={e=>setPrefixes(e.target.value)} placeholder="S, Scene, EP"
+              style={{width:'100%',background:T.surface2,border:`1px solid ${T.border}`,borderRadius:5,
+                padding:'6px 9px',fontSize:12,color:T.text,boxSizing:'border-box'}}/>
+          </div>
+
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+            <div>
+              <div style={{fontSize:9,color:T.textDim,letterSpacing:'0.06em',marginBottom:5}}>GROUP = SEGMENT #</div>
+              <input type="number" min="1" value={groupSegment} onChange={e=>setGroupSegment(e.target.value)}
+                style={{width:'100%',background:T.surface2,border:`1px solid ${T.border}`,borderRadius:5,
+                  padding:'6px 9px',fontSize:12,color:T.text,textAlign:'center',boxSizing:'border-box'}}/>
+            </div>
+            <div>
+              <div style={{fontSize:9,color:T.textDim,letterSpacing:'0.06em',marginBottom:5}}>SORT = SEGMENT #</div>
+              <input type="number" min="1" value={sortSegment} onChange={e=>setSortSegment(e.target.value)}
+                style={{width:'100%',background:T.surface2,border:`1px solid ${T.border}`,borderRadius:5,
+                  padding:'6px 9px',fontSize:12,color:T.text,textAlign:'center',boxSizing:'border-box'}}/>
+            </div>
+          </div>
+
+          <div style={{background:T.surface2,borderRadius:7,padding:'10px 12px',border:`1px solid ${T.border}`}}>
+            <div style={{fontSize:9,color:T.textDim,letterSpacing:'0.06em',marginBottom:7}}>TEST FILENAME</div>
+            <input value={sample} onChange={e=>setSample(e.target.value)}
+              style={{width:'100%',background:T.bg,border:`1px solid ${T.border}`,borderRadius:5,
+                padding:'6px 9px',fontSize:11,color:T.text,fontFamily:"'Geist Mono',monospace",
+                boxSizing:'border-box',marginBottom:8}}/>
+            {preview.valid ? (
+              <div style={{display:'flex',alignItems:'center',gap:7,flexWrap:'wrap'}}>
+                <span style={{fontSize:9,color:T.success}}>✓ Group {preview.sceneNum}{preview.shotNum?`, Sort ${preview.shotNum}`:''}</span>
+                {preview.desc && <span style={{fontSize:10,color:T.textMute}}>"{preview.desc}"</span>}
+              </div>
+            ) : (
+              <span style={{fontSize:9,color:T.danger}}>✕ Could not parse - check your rules</span>
+            )}
+          </div>
+        </div>
+
+        <div style={{padding:'10px 18px',borderTop:`1px solid ${T.rule}`,display:'flex',gap:8,flexShrink:0}}>
+          <button onClick={handleReset} style={{padding:'8px 14px',background:'transparent',
+            border:`1px solid ${T.border}`,borderRadius:6,color:T.textDim,fontSize:11}}>Reset</button>
+          <div style={{flex:1}}/>
+          <button onClick={onClose} style={{padding:'8px 16px',background:'transparent',
+            border:`1px solid ${T.border}`,borderRadius:6,color:T.textMute,fontSize:11}}>Cancel</button>
+          <button onClick={handleSave} style={{padding:'8px 18px',background:T.accent,
+            border:'none',borderRadius:6,color:'#0e0d0b',fontSize:11,fontWeight:600}}>Save</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 function ShotBoard(){
+  const [subTab, setSubTab] = useState('list'); // 'list' | 'gallery'
+  const mob = useMobile();
+
+  return (
+    <div style={{height:'100%',display:'flex',flexDirection:'column'}}>
+      {/* Sub-tab switcher */}
+      <div style={{padding:mob?'6px 8px 0':'8px 20px 0',display:'flex',gap:6,flexShrink:0}}>
+        <button onClick={()=>setSubTab('list')}
+          style={{padding:'6px 14px',borderRadius:'6px 6px 0 0',fontSize:11,
+            fontFamily:"'Geist Mono',monospace",
+            background:subTab==='list'?T.panel:'transparent',
+            color:subTab==='list'?T.accent:T.textDim,
+            border:`1px solid ${subTab==='list'?T.border:'transparent'}`,
+            borderBottom:subTab==='list'?`1px solid ${T.panel}`:'none',
+            position:'relative',top:1}}>
+          ▣ Shot List
+        </button>
+        <button onClick={()=>setSubTab('gallery')}
+          style={{padding:'6px 14px',borderRadius:'6px 6px 0 0',fontSize:11,
+            fontFamily:"'Geist Mono',monospace",
+            background:subTab==='gallery'?T.panel:'transparent',
+            color:subTab==='gallery'?T.accent:T.textDim,
+            border:`1px solid ${subTab==='gallery'?T.border:'transparent'}`,
+            borderBottom:subTab==='gallery'?`1px solid ${T.panel}`:'none',
+            position:'relative',top:1}}>
+          🎞 Gallery
+        </button>
+      </div>
+      <div style={{flex:1,overflow:'hidden',borderTop:`1px solid ${T.border}`}}>
+        {subTab==='list' && <ShotListSubTab/>}
+        {subTab==='gallery' && <ShotGalleryTab/>}
+      </div>
+    </div>
+  );
+}
+
+function ShotListSubTab(){
   const {proj,updateProj}=useProj();
   const mob=useMobile(); const t=useT();
 
