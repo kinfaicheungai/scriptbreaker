@@ -794,6 +794,68 @@ function compressGalleryImage(file, maxDim, quality){
 const GALLERY_IMG_EXT = /\.(jpg|jpeg|png|gif|webp|heic|bmp)$/i;
 
 /* ═══════════════════════════════════════════════════════════
+   CLOUDINARY - cloud upload for team-shared gallery images.
+   Unsigned upload preset, no API secret exposed client-side.
+═══════════════════════════════════════════════════════════ */
+const CLOUDINARY_CLOUD_NAME = 'df9o3vkb8';
+const CLOUDINARY_UPLOAD_PRESET = 'scriptbreaker_gallery';
+
+async function uploadToCloudinary(file){
+  const url = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`;
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+  formData.append('folder', 'shot_refs');
+
+  const res = await fetch(url, { method: 'POST', body: formData });
+  if(!res.ok){
+    const errText = await res.text().catch(()=> '');
+    throw new Error('Cloudinary upload failed: ' + res.status + ' ' + errText);
+  }
+  const data = await res.json();
+  return {
+    url: data.secure_url,
+    publicId: data.public_id,
+    thumbUrl: data.secure_url.replace('/upload/', '/upload/w_400,c_limit,q_auto,f_auto/'),
+  };
+}
+
+// Firestore collection storing cloud gallery image metadata, shared across team.
+// Doc per project: { images: [{name, sceneNum, shotNum, desc, url, thumbUrl, publicId}] }
+async function fbSaveCloudGalleryItem(projId, item){
+  const db = getFirestore();
+  const ref = db.collection('gallery_cloud').doc(projId);
+  const snap = await ref.get();
+  const existing = snap.exists ? (snap.data().images || []) : [];
+  const filtered = existing.filter(i => i.name !== item.name);
+  await ref.set({
+    images: [...filtered, item],
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+  });
+}
+
+async function fbDeleteCloudGalleryItem(projId, name){
+  const db = getFirestore();
+  const ref = db.collection('gallery_cloud').doc(projId);
+  const snap = await ref.get();
+  if(!snap.exists) return;
+  const existing = snap.data().images || [];
+  await ref.set({
+    images: existing.filter(i => i.name !== name),
+    updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+  });
+}
+
+function fbSubscribeCloudGallery(projId, callback){
+  try {
+    const db = getFirestore();
+    return db.collection('gallery_cloud').doc(projId).onSnapshot(doc=>{
+      callback(doc.exists ? (doc.data().images || []) : []);
+    }, ()=>callback([]));
+  } catch(e){ console.warn('Cloud gallery subscribe error:', e); return ()=>{}; }
+}
+
+/* ═══════════════════════════════════════════════════════════
    SHOT GALLERY TAB - bulk-imported reference images, scoped
    to the current project, filterable by scene number or
    shoot location (reuses proj.locations/scene.locationId)
@@ -803,30 +865,47 @@ function ShotGalleryTab(){
   const mob = useMobile();
   const projId = proj._id || 'default';
 
-  const [images, setImages] = React.useState([]);
+  const [localImages, setLocalImages] = React.useState([]);
+  const [cloudImages, setCloudImages] = React.useState([]);
+  const [cloudStatus, setCloudStatus] = React.useState('offline'); // offline|live
   const [loading, setLoading] = React.useState(true);
   const [filterLoc, setFilterLoc] = React.useState('all');
+  const [filterSrc, setFilterSrc] = React.useState('all'); // all|local|cloud
   const [search, setSearch] = React.useState('');
   const [lightbox, setLightbox] = React.useState(null);
   const [showUpload, setShowUpload] = React.useState(false);
   const [showRules, setShowRules] = React.useState(false);
   const [rules, setRules] = React.useState(loadGalleryRules);
 
-  // Load images for this project from IndexedDB
-  const reload = React.useCallback(()=>{
+  // Load local (IndexedDB) images for this project
+  const reloadLocal = React.useCallback(()=>{
     setLoading(true);
     galleryGetAll(projId).then(list=>{
-      list.sort((a,b)=>{
-        const sa = a.sceneNum ?? 99999, sb = b.sceneNum ?? 99999;
-        if(sa !== sb) return sa - sb;
-        return (a.shotNum||0) - (b.shotNum||0);
-      });
-      setImages(list);
+      setLocalImages(list.map(img => ({...img, source:'local', dataUrl: img.dataUrl})));
       setLoading(false);
     }).catch(()=>setLoading(false));
   },[projId]);
 
-  React.useEffect(()=>{ reload(); },[reload]);
+  React.useEffect(()=>{ reloadLocal(); },[reloadLocal]);
+
+  // Subscribe to cloud (Firestore + Cloudinary) images, shared across team
+  React.useEffect(()=>{
+    const unsub = fbSubscribeCloudGallery(projId, (list)=>{
+      setCloudImages(list.map(img => ({...img, source:'cloud', dataUrl: img.url})));
+      setCloudStatus('live');
+    });
+    return ()=> unsub && unsub();
+  },[projId]);
+
+  const images = React.useMemo(()=>{
+    const merged = [...localImages, ...cloudImages];
+    merged.sort((a,b)=>{
+      const sa = a.sceneNum ?? 99999, sb = b.sceneNum ?? 99999;
+      if(sa !== sb) return sa - sb;
+      return (a.shotNum||0) - (b.shotNum||0);
+    });
+    return merged;
+  },[localImages, cloudImages]);
 
   // Map scene number -> locationId, so gallery images (which only know
   // their scene number) can be filtered by the same locations used
@@ -842,6 +921,7 @@ function ShotGalleryTab(){
 
   const filtered = React.useMemo(()=>{
     let list = images;
+    if(filterSrc!=='all') list = list.filter(img => img.source===filterSrc);
     if(filterLoc!=='all'){
       list = list.filter(img => sceneToLoc[img.sceneNum] === filterLoc);
     }
@@ -854,21 +934,22 @@ function ShotGalleryTab(){
       );
     }
     return list;
-  },[images, filterLoc, search, sceneToLoc]);
+  },[images, filterLoc, filterSrc, search, sceneToLoc]);
 
   const sceneNumbers = React.useMemo(()=>{
     const set = new Set(images.map(i=>i.sceneNum).filter(n=>n!=null));
     return Array.from(set).sort((a,b)=>a-b);
   },[images]);
 
-  async function handleDelete(name){
-    await galleryDeleteImage(projId, name);
-    reload();
+  async function handleDelete(img){
+    if(img.source==='cloud') await fbDeleteCloudGalleryItem(projId, img.name);
+    else await galleryDeleteImage(projId, img.name);
+    reloadLocal();
   }
 
   async function handleClearAll(){
     await galleryClearProject(projId);
-    reload();
+    reloadLocal();
   }
 
   return (
@@ -890,6 +971,16 @@ function ShotGalleryTab(){
             </button>
           ))}
         </div>
+        <div style={{display:'flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:99,
+          background:cloudStatus==='live'?T.success+'18':T.surface2,
+          border:`1px solid ${cloudStatus==='live'?T.success+'44':T.border}`}}>
+          <div style={{width:5,height:5,borderRadius:'50%',
+            background:cloudStatus==='live'?T.success:T.textDim}}/>
+          <span style={{fontFamily:"'Geist Mono',monospace",fontSize:8,
+            color:cloudStatus==='live'?T.success:T.textDim}}>
+            {cloudStatus==='live'?'CLOUD LIVE':'CLOUD OFFLINE'}
+          </span>
+        </div>
         <Mono s={{color:T.textDim,fontSize:9}}>{images.length} IMAGES</Mono>
       </div>
 
@@ -900,6 +991,13 @@ function ShotGalleryTab(){
           placeholder="Search scene, description..."
           style={{flex:1,minWidth:140,background:T.surface2,border:`1px solid ${T.border}`,
             borderRadius:5,padding:'5px 10px',fontSize:11,color:T.text}}/>
+        <select value={filterSrc} onChange={e=>setFilterSrc(e.target.value)}
+          style={{background:T.surface2,border:`1px solid ${T.border}`,borderRadius:5,
+            padding:'5px 8px',fontSize:10,color:T.text,fontFamily:"'Geist Mono',monospace"}}>
+          <option value="all">All sources</option>
+          <option value="local">📍 Local only</option>
+          <option value="cloud">☁ Cloud only</option>
+        </select>
         <button onClick={()=>setShowRules(true)}
           style={{padding:'5px 10px',background:'transparent',border:`1px solid ${T.border}`,
             borderRadius:5,color:T.textDim,fontSize:10,fontFamily:"'Geist Mono',monospace"}}>
@@ -938,7 +1036,7 @@ function ShotGalleryTab(){
         )}
         <div style={{display:'grid',gridTemplateColumns:mob?'repeat(2,1fr)':'repeat(auto-fill,minmax(170px,1fr))',gap:mob?8:12}}>
           {filtered.map((img, idx)=>(
-            <GalleryThumb key={img.key} img={img} onClick={()=>setLightbox(idx)}/>
+            <GalleryThumb key={(img.source||'local')+'_'+img.name} img={img} onClick={()=>setLightbox(idx)}/>
           ))}
         </div>
       </div>
@@ -951,13 +1049,13 @@ function ShotGalleryTab(){
 
       {showUpload && (
         <GalleryUploadModal projId={projId} rules={rules}
-          onClose={()=>{setShowUpload(false); reload();}}
+          onClose={()=>{setShowUpload(false); reloadLocal();}}
           onClearAll={handleClearAll} mob={mob}/>
       )}
 
       {showRules && (
         <GalleryRulesModal rules={rules}
-          onSave={(r)=>{setRules(r); saveGalleryRules(r); reload();}}
+          onSave={(r)=>{setRules(r); saveGalleryRules(r); reloadLocal();}}
           onClose={()=>setShowRules(false)}/>
       )}
     </div>
@@ -969,11 +1067,15 @@ function GalleryThumb({img, onClick}){
     <div onClick={onClick} style={{cursor:'pointer'}}>
       <div style={{position:'relative',aspectRatio:'16/9',borderRadius:7,overflow:'hidden',
         background:T.surface2,border:`1px solid ${T.border}`}}>
-        <img src={img.dataUrl} alt={img.desc} loading="lazy"
+        <img src={img.thumbUrl || img.dataUrl} alt={img.desc} loading="lazy"
           style={{width:'100%',height:'100%',objectFit:'cover'}}/>
         <div style={{position:'absolute',top:5,left:5,background:'rgba(14,13,11,0.85)',
           borderRadius:4,padding:'2px 6px',fontSize:9,color:T.accent,fontWeight:600}}>
           S{img.sceneNum}{img.shotNum?'.'+img.shotNum:''}
+        </div>
+        <div style={{position:'absolute',top:5,right:5,background:'rgba(14,13,11,0.85)',
+          borderRadius:4,padding:'2px 5px',fontSize:9}}>
+          {img.source==='cloud' ? '☁' : '📍'}
         </div>
       </div>
       <div style={{fontSize:10,color:T.textMute,marginTop:4,overflow:'hidden',
@@ -1026,7 +1128,7 @@ function GalleryLightbox({images, index, onClose, onNav, onDelete, mob}){
           </div>
         </div>
         <div style={{fontSize:10,color:T.textDim,flexShrink:0}}>{index+1}/{images.length}</div>
-        <button onClick={()=>{onDelete(img.name); onClose();}}
+        <button onClick={()=>{onDelete(img); onClose();}}
           style={{flexShrink:0,width:32,height:32,borderRadius:'50%',background:T.surface2,
             border:`1px solid ${T.danger}44`,color:T.danger,fontSize:13,
             display:'grid',placeItems:'center'}}>🗑</button>
@@ -1079,6 +1181,7 @@ function GalleryUploadModal({projId, rules, onClose, onClearAll, mob}){
   const [dragOver, setDragOver] = React.useState(false);
   const [uploading, setUploading] = React.useState(false);
   const [done, setDone] = React.useState(0);
+  const [target, setTarget] = React.useState('local'); // 'local' | 'cloud'
   const fileInputRef = React.useRef(null);
 
   function handleFiles(fileList){
@@ -1105,15 +1208,27 @@ function GalleryUploadModal({projId, rules, onClose, onClearAll, mob}){
       if(item.status==='done'){ setDone(d=>d+1); continue; }
       setFiles(prev => prev.map((f,idx)=> idx===i ? {...f,status:'uploading'} : f));
       try {
-        const dataUrl = await compressGalleryImage(item.file, 1400, 0.82);
-        await galleryPutImage(projId, {
-          name: item.file.name,
-          sceneNum: item.parsed.sceneNum,
-          shotNum: item.parsed.shotNum,
-          desc: item.parsed.desc,
-          raw: item.file.name,
-          dataUrl,
-        });
+        if(target==='cloud'){
+          const {url, thumbUrl, publicId} = await uploadToCloudinary(item.file);
+          await fbSaveCloudGalleryItem(projId, {
+            name: item.file.name,
+            sceneNum: item.parsed.sceneNum,
+            shotNum: item.parsed.shotNum,
+            desc: item.parsed.desc,
+            raw: item.file.name,
+            url, thumbUrl, publicId,
+          });
+        } else {
+          const dataUrl = await compressGalleryImage(item.file, 1400, 0.82);
+          await galleryPutImage(projId, {
+            name: item.file.name,
+            sceneNum: item.parsed.sceneNum,
+            shotNum: item.parsed.shotNum,
+            desc: item.parsed.desc,
+            raw: item.file.name,
+            dataUrl,
+          });
+        }
         setFiles(prev => prev.map((f,idx)=> idx===i ? {...f,status:'done'} : f));
         setDone(d=>d+1);
       } catch(e){
@@ -1142,6 +1257,31 @@ function GalleryUploadModal({projId, rules, onClose, onClearAll, mob}){
           {!uploading && <button onClick={onClose}
             style={{color:T.textDim,fontSize:17,background:'transparent',border:'none'}}>x</button>}
         </div>
+
+        {/* Storage target switcher */}
+        <div style={{padding:'10px 18px',borderBottom:`1px solid ${T.rule}`,
+          display:'flex',gap:8,alignItems:'center',flexShrink:0}}>
+          <span style={{fontSize:9,color:T.textDim,letterSpacing:'0.06em'}}>SAVE TO</span>
+          <button onClick={()=>!uploading && setTarget('local')}
+            style={{padding:'5px 12px',borderRadius:6,fontSize:11,
+              background:target==='local'?T.accent+'22':T.surface2,
+              border:`1px solid ${target==='local'?T.accent:T.border}`,
+              color:target==='local'?T.accent:T.textMute}}>
+            📍 This device only
+          </button>
+          <button onClick={()=>!uploading && setTarget('cloud')}
+            style={{padding:'5px 12px',borderRadius:6,fontSize:11,
+              background:target==='cloud'?T.accent+'22':T.surface2,
+              border:`1px solid ${target==='cloud'?T.accent:T.border}`,
+              color:target==='cloud'?T.accent:T.textMute}}>
+            ☁ Cloud (team-shared)
+          </button>
+        </div>
+        {target==='cloud' && (
+          <div style={{padding:'6px 18px',background:T.info+'10',fontSize:9,color:T.textMute,flexShrink:0}}>
+            Images saved here will be visible to anyone with access to this project's data.
+          </div>
+        )}
 
         <div style={{flex:1,overflow:'auto',padding:'14px 18px'}}>
           {files.length===0 && (
