@@ -3479,7 +3479,11 @@ function ScheduleTab({schedule,setSchedule,startDate,setStartDate,endDate,setEnd
                   color:d.dayOff?T.warn:T.textDim}}>
                 {d.dayOff?'▶ Resume':'⏸ Day Off'}
               </button>
-              <button onClick={()=>{removeDay(selDay);setSelDay(null);}}
+              <button onClick={()=>{
+                  if(confirm(`Remove Day ${selDay} entirely? Its ${d.scenes.length} scene(s) will go back to Unscheduled. This cannot be undone.`)){
+                    removeDay(selDay);setSelDay(null);
+                  }
+                }}
                 style={{padding:'3px 9px',borderRadius:4,fontSize:10,cursor:'pointer',
                   background:T.danger+'10',border:`1px solid ${T.danger}44`,color:T.danger}}>
                 × Remove
@@ -3540,7 +3544,7 @@ function ScheduleTab({schedule,setSchedule,startDate,setStartDate,endDate,setEnd
                     onMouseLeave={e=>e.currentTarget.style.background=T.accent+'18'}>
                     🎬→
                   </button>
-                  <button onClick={()=>moveScene(id,String(selDay),'pool')}
+                  <button onClick={()=>{ if(confirm(`Remove scene ${s.id} from Day ${selDay}? It will go back to Unscheduled.`)) moveScene(id,String(selDay),'pool'); }}
                     style={{color:T.textDim,fontSize:14,lineHeight:1,padding:'0 3px',background:'transparent',
                       border:'none',cursor:'pointer',flexShrink:0}}
                     onMouseEnter={e=>e.currentTarget.style.color=T.danger}
