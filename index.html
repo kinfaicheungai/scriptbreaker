@@ -860,7 +860,7 @@ function fbSubscribeCloudGallery(projId, callback){
    to the current project, filterable by scene number or
    shoot location (reuses proj.locations/scene.locationId)
 ═══════════════════════════════════════════════════════════ */
-function ShotGalleryTab(){
+function ShotGalleryTab({focusScene}){
   const {proj} = useProj();
   const mob = useMobile();
   const projId = proj._id || 'default';
@@ -896,6 +896,15 @@ function ShotGalleryTab(){
     });
     return ()=> unsub && unsub();
   },[projId]);
+
+  // When arriving from another view focused on a scene, auto-filter to its number
+  React.useEffect(()=>{
+    if(focusScene){
+      const num = String(focusScene).replace(/\D/g,'').replace(/^0+/,'') || '0';
+      setSearch(num);
+      setFilterLoc('all');
+    }
+  },[focusScene]);
 
   const images = React.useMemo(()=>{
     const merged = [...localImages, ...cloudImages];
@@ -1508,13 +1517,24 @@ function GalleryRulesModal({rules, onSave, onClose}){
 
 
 function ShotBoard(){
+  const {navTarget,clearNavTarget}=useProj();
   const [subTab, setSubTab] = useState('list'); // 'list' | 'gallery'
+  const [focusScene, setFocusScene] = useState(null); // scene id to auto-filter/scroll to
   const mob = useMobile();
+
+  // Consume a navigation target arriving from another view (e.g. Schedule)
+  React.useEffect(()=>{
+    if(navTarget && navTarget.view==='shotboard' && navTarget.sceneId){
+      setFocusScene(navTarget.sceneId);
+      if(navTarget.subTab) setSubTab(navTarget.subTab);
+      clearNavTarget();
+    }
+  },[navTarget, clearNavTarget]);
 
   return (
     <div style={{height:'100%',display:'flex',flexDirection:'column'}}>
       {/* Sub-tab switcher */}
-      <div style={{padding:mob?'6px 8px 0':'8px 20px 0',display:'flex',gap:6,flexShrink:0}}>
+      <div style={{padding:mob?'6px 8px 0':'8px 20px 0',display:'flex',gap:6,flexShrink:0,alignItems:'center'}}>
         <button onClick={()=>setSubTab('list')}
           style={{padding:'6px 14px',borderRadius:'6px 6px 0 0',fontSize:11,
             fontFamily:"'Geist Mono',monospace",
@@ -1535,16 +1555,28 @@ function ShotBoard(){
             position:'relative',top:1}}>
           🎞 Gallery
         </button>
+        {focusScene && (
+          <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:6,
+            padding:'3px 10px',borderRadius:99,background:T.accent+'18',
+            border:`1px solid ${T.accent}44`}}>
+            <span style={{fontSize:10,color:T.accent,fontFamily:"'Geist Mono',monospace"}}>
+              FOCUS: {focusScene}
+            </span>
+            <button onClick={()=>setFocusScene(null)}
+              style={{color:T.accent,fontSize:12,background:'transparent',border:'none',
+                cursor:'pointer',lineHeight:1}}>×</button>
+          </div>
+        )}
       </div>
       <div style={{flex:1,overflow:'hidden',borderTop:`1px solid ${T.border}`}}>
-        {subTab==='list' && <ShotListSubTab/>}
-        {subTab==='gallery' && <ShotGalleryTab/>}
+        {subTab==='list' && <ShotListSubTab focusScene={focusScene}/>}
+        {subTab==='gallery' && <ShotGalleryTab focusScene={focusScene}/>}
       </div>
     </div>
   );
 }
 
-function ShotListSubTab(){
+function ShotListSubTab({focusScene}){
   const {proj,updateProj}=useProj();
   const mob=useMobile(); const t=useT();
 
@@ -1584,6 +1616,16 @@ function ShotListSubTab(){
     }
   };
 
+  // When arriving from another view with a focus scene, clear filters so it's
+  // visible, then scroll to it
+  React.useEffect(()=>{
+    if(focusScene){
+      setFilterLoc('all'); setFilterAct('all');
+      const timer=setTimeout(()=>jumpTo(focusScene), 150);
+      return ()=>clearTimeout(timer);
+    }
+  },[focusScene]);
+
   return(
     <div style={{height:'100%',display:'flex',flexDirection:'column'}}>
       <div style={{padding:'6px 20px',borderBottom:`1px solid ${T.rule}`,display:'flex',gap:8,alignItems:'center',flexShrink:0,justifyContent:'space-between'}}>
@@ -1620,7 +1662,7 @@ function ShotListSubTab(){
           return(
             <div key={scene.id} id={`scene-${scene.id}`}>
               {showDivider&&<div style={{display:'flex',alignItems:'center',gap:10,margin:'10px 0 8px',paddingTop:si>0?10:0,borderTop:si>0?`1px solid ${actCol}33`:'none'}}><Mono s={{color:actCol,letterSpacing:'0.14em'}}>ACT {scene.act}</Mono><div style={{flex:1,height:1,background:actCol+'22'}}/></div>}
-              <div style={{marginBottom:10,border:`1px solid ${T.border}`,borderRadius:10,overflow:'hidden'}}>
+              <div style={{marginBottom:10,border:`${focusScene===scene.id?2:1}px solid ${focusScene===scene.id?T.accent:T.border}`,borderRadius:10,overflow:'hidden',boxShadow:focusScene===scene.id?`0 0 0 3px ${T.accent}22`:'none'}}>
                 <div style={{display:'flex',alignItems:'center',gap:10,padding:'9px 14px',background:T.panel,borderLeft:`3px solid ${loc?.color||actCol}`}}>
                   <Mono s={{color:T.textDim,background:T.chip,padding:'1px 6px',borderRadius:3,fontSize:10}}>{scene.id}</Mono>
                   <div style={{flex:1,fontFamily:"'Geist Mono',monospace",fontSize:10,color:T.textMute,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{scene.slug}</div>
@@ -3141,7 +3183,7 @@ function NoteModal({note, scenes, onSave, onClose, mob}){
 
 
 function DailyView(){
-  const {proj,updateProj}=useProj();
+  const {proj,updateProj,navigateTo}=useProj();
   const t=useT();
   const [dlTab,setDlTab]=React.useState('schedule');
 
@@ -3489,6 +3531,15 @@ function ScheduleTab({schedule,setSchedule,startDate,setStartDate,endDate,setEnd
                     {s.slug?.replace(/^(INT|EXT)[./\s]*/i,'').slice(0,32)}
                   </span>
                   <span style={{fontSize:10,color:T.textDim,flexShrink:0}}>{s.pages}p</span>
+                  <button onClick={(e)=>{e.stopPropagation();navigateTo('shotboard',{sceneId:id});}}
+                    title="Jump to Shot Board for this scene"
+                    style={{color:T.accent,fontSize:11,lineHeight:1,padding:'2px 6px',
+                      background:T.accent+'18',border:`1px solid ${T.accent}44`,borderRadius:4,
+                      cursor:'pointer',flexShrink:0,fontFamily:"'Geist Mono',monospace"}}
+                    onMouseEnter={e=>e.currentTarget.style.background=T.accent+'33'}
+                    onMouseLeave={e=>e.currentTarget.style.background=T.accent+'18'}>
+                    🎬→
+                  </button>
                   <button onClick={()=>moveScene(id,String(selDay),'pool')}
                     style={{color:T.textDim,fontSize:14,lineHeight:1,padding:'0 3px',background:'transparent',
                       border:'none',cursor:'pointer',flexShrink:0}}
@@ -5231,7 +5282,16 @@ function Shell({initProj,onBack,lang,setLang,dark,setDark}){
   const [proj,setProj]=useState(initProj);
   const [view,setView]=useState('dashboard');
   const [showMerge,setShowMerge]=useState(false);
+  const [navTarget,setNavTarget]=useState(null); // {view, sceneId, subTab} for cross-view jumps
   const mob=useMobile();
+
+  // Jump to another view, optionally targeting a specific scene (e.g. Schedule -> Shot Board)
+  const navigateTo=useCallback((targetView, opts={})=>{
+    setNavTarget({view:targetView, ...opts});
+    setView(targetView);
+  },[]);
+  // Called by the destination view once it has consumed the nav target
+  const clearNavTarget=useCallback(()=>setNavTarget(null),[]);
 
   const updateProj=useCallback((updater)=>{
     setProj(p=>{
@@ -5266,7 +5326,7 @@ function Shell({initProj,onBack,lang,setLang,dark,setDark}){
 
   return(
     <LangCtx.Provider value={lang}>
-      <Ctx.Provider value={{proj,updateProj}}>
+      <Ctx.Provider value={{proj,updateProj,navTarget,navigateTo,clearNavTarget}}>
         <div style={{display:'flex',height:mob?'100dvh':'100vh',overflow:'hidden',background:T.bg,flexDirection:mob?'column':'row'}}>
 
           {/* Sidebar - desktop only */}
