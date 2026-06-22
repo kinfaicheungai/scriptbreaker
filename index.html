@@ -82,7 +82,7 @@ const LOC_COLORS=["#7ab6c4","#d49a5c","#c4654b","#7aa37a","#c9a14a","#a07bc4"];
 ═══════════════════════════════════════════════════════════ */
 const LANGS={
   en:{
-    cabinet:"Script Breaker",newVersion:"v11 · JSON-driven",importJson:"Import JSON",
+    cabinet:"Script Breaker",newVersion:"v12 · Scene Breakdown",importJson:"Import JSON",
     noProjects:"No projects yet",importFirst:"Import a JSON breakdown from Claude to get started",
     howItWorks:"How it works",
     step1t:"Analyse in Claude Project",step1d:"Upload screenplay PDF to a Claude Project. Ask Claude to output a full breakdown JSON.",
@@ -104,7 +104,7 @@ const LANGS={
     allLocations:"All locations",
   },
   zh:{
-    cabinet:"Script Breaker",newVersion:"v11 · JSON驱动",importJson:"导入JSON",
+    cabinet:"Script Breaker",newVersion:"v12 · 场景拆解",importJson:"导入JSON",
     noProjects:"暂无项目",importFirst:"从Claude导入JSON解构文件即可开始",
     howItWorks:"使用流程",
     step1t:"在Claude Project分析剧本",step1d:"上传剧本PDF至Claude Project，让Claude输出完整解构JSON。",
@@ -126,7 +126,7 @@ const LANGS={
     allLocations:"全部地点",
   },
   ja:{
-    cabinet:"Script Breaker",newVersion:"v11",importJson:"JSONインポート",
+    cabinet:"Script Breaker",newVersion:"v12",importJson:"JSONインポート",
     noProjects:"プロジェクトなし",importFirst:"ClaudeからJSONをインポートして開始",
     howItWorks:"使い方",
     step1t:"Claudeで脚本分析",step1d:"脚本PDFをClaudeプロジェクトにアップロード。完全なJSONを出力するよう依頼。",
@@ -706,6 +706,64 @@ async function galleryClearProject(projId){
     const tx = db.transaction(GALLERY_STORE, 'readwrite');
     const store = tx.objectStore(GALLERY_STORE);
     all.forEach(item => store.delete(item.key));
+    tx.oncomplete = ()=>resolve();
+    tx.onerror = ()=>reject(tx.error);
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════
+   MAKEUP REF IMAGES - stored in IndexedDB (sb_makeup), kept
+   OUT of the project JSON so Export stays small. Scoped per
+   project via projId. Text profile lives in proj._bd.makeupProfile.
+═══════════════════════════════════════════════════════════ */
+const MAKEUP_DB_NAME = 'sb_makeup';
+const MAKEUP_STORE = 'images';
+
+function openMakeupDB(){
+  return new Promise((resolve, reject)=>{
+    const req = indexedDB.open(MAKEUP_DB_NAME, 1);
+    req.onupgradeneeded = ()=>{
+      const db = req.result;
+      if(!db.objectStoreNames.contains(MAKEUP_STORE)){
+        const store = db.createObjectStore(MAKEUP_STORE, {keyPath:'key'});
+        store.createIndex('projId', 'projId', {unique:false});
+        store.createIndex('projChar', 'projChar', {unique:false});
+      }
+    };
+    req.onsuccess = ()=>resolve(req.result);
+    req.onerror = ()=>reject(req.error);
+  });
+}
+
+async function makeupPutImage(projId, item){
+  // item: {imgId, charId, dataUrl}
+  const db = await openMakeupDB();
+  const key = projId + '::' + item.imgId;
+  return new Promise((resolve, reject)=>{
+    const tx = db.transaction(MAKEUP_STORE, 'readwrite');
+    tx.objectStore(MAKEUP_STORE).put({ key, projId, projChar: projId + '::' + item.charId, ...item });
+    tx.oncomplete = ()=>resolve();
+    tx.onerror = ()=>reject(tx.error);
+  });
+}
+
+async function makeupGetForChar(projId, charId){
+  const db = await openMakeupDB();
+  return new Promise((resolve, reject)=>{
+    const tx = db.transaction(MAKEUP_STORE, 'readonly');
+    const idx = tx.objectStore(MAKEUP_STORE).index('projChar');
+    const req = idx.getAll(projId + '::' + charId);
+    req.onsuccess = ()=>resolve(req.result || []);
+    req.onerror = ()=>reject(req.error);
+  });
+}
+
+async function makeupDeleteImage(projId, imgId){
+  const db = await openMakeupDB();
+  const key = projId + '::' + imgId;
+  return new Promise((resolve, reject)=>{
+    const tx = db.transaction(MAKEUP_STORE, 'readwrite');
+    tx.objectStore(MAKEUP_STORE).delete(key);
     tx.oncomplete = ()=>resolve();
     tx.onerror = ()=>reject(tx.error);
   });
@@ -1690,8 +1748,174 @@ function ShotListSubTab({focusScene}){
   );
 }
 
+/* ═══════════════════════════════════════════════════════════
+   MAKEUP / HAIR profile per character. Text entries (area +
+   description) live in proj._bd.makeupProfile[charId] so they
+   Export. Reference images live in IndexedDB (sb_makeup) and
+   are loaded on demand. Used editable in Breakdown > Characters
+   and read-only as a baseline reference in Continuity > Cards.
+═══════════════════════════════════════════════════════════ */
+function MakeupSection(props){
+  const charId = props.charId;
+  const projId = props.projId;
+  const readOnly = !!props.readOnly;
+  const ctx = useProj();
+  const proj = ctx.proj;
+  const updateProj = ctx.updateProj;
+  const entries = (proj._bd && proj._bd.makeupProfile && proj._bd.makeupProfile[charId]) || [];
+  const imgMapState = React.useState({});
+  const imgMap = imgMapState[0];
+  const setImgMap = imgMapState[1];
+  const fileRefs = React.useRef({});
+  const camRefs = React.useRef({});
+
+  React.useEffect(function(){
+    let alive = true;
+    if(!projId || !charId){ setImgMap({}); return; }
+    makeupGetForChar(projId, charId).then(function(rows){
+      if(!alive) return;
+      const m = {};
+      rows.forEach(function(r){ m[r.imgId] = r.dataUrl; });
+      setImgMap(m);
+    }).catch(function(){});
+    return function(){ alive = false; };
+  }, [projId, charId, entries.length]);
+
+  function mutate(fn){
+    updateProj(function(p){
+      const bd = Object.assign({}, p._bd || {});
+      const mp = Object.assign({}, bd.makeupProfile || {});
+      const cur = (mp[charId] || []).slice();
+      mp[charId] = fn(cur);
+      bd.makeupProfile = mp;
+      return Object.assign({}, p, {_bd: bd});
+    });
+  }
+  function addEntry(){
+    const id = 'mk' + Date.now() + Math.floor(Math.random()*1000);
+    mutate(function(cur){ return cur.concat([{id:id, area:'', desc:'', imgs:[]}]); });
+  }
+  function setField(id, field, val){
+    mutate(function(cur){ return cur.map(function(e){
+      if(e.id!==id) return e;
+      const o = Object.assign({}, e); o[field] = val; return o;
+    }); });
+  }
+  function removeEntry(id){
+    if(!confirm('Remove this makeup item?')) return;
+    const ent = entries.find(function(e){ return e.id===id; });
+    if(ent){ (ent.imgs||[]).forEach(function(iid){ makeupDeleteImage(projId, iid); }); }
+    mutate(function(cur){ return cur.filter(function(e){ return e.id!==id; }); });
+  }
+  function addImage(entryId, file){
+    if(!file || !file.type || file.type.indexOf('image/')!==0) return;
+    const r = new FileReader();
+    r.onload = function(ev){
+      const dataUrl = ev.target.result;
+      const imgId = 'im' + Date.now() + Math.floor(Math.random()*1000);
+      makeupPutImage(projId, {imgId:imgId, charId:charId, dataUrl:dataUrl}).then(function(){
+        setImgMap(function(prev){ const n = Object.assign({}, prev); n[imgId] = dataUrl; return n; });
+        mutate(function(cur){ return cur.map(function(e){
+          return e.id===entryId ? Object.assign({}, e, {imgs:(e.imgs||[]).concat([imgId])}) : e;
+        }); });
+      });
+    };
+    r.readAsDataURL(file);
+  }
+  function removeImage(entryId, imgId){
+    makeupDeleteImage(projId, imgId);
+    setImgMap(function(prev){ const n = Object.assign({}, prev); delete n[imgId]; return n; });
+    mutate(function(cur){ return cur.map(function(e){
+      return e.id===entryId ? Object.assign({}, e, {imgs:(e.imgs||[]).filter(function(x){ return x!==imgId; })}) : e;
+    }); });
+  }
+
+  if(readOnly && entries.length===0){
+    return React.createElement('div', {style:{fontSize:11, color:T.textDim, fontStyle:'italic'}}, 'No makeup profile yet.');
+  }
+
+  return (
+    <div style={{display:'flex', flexDirection:'column', gap:10}}>
+      {entries.map(function(e){
+        const imgs = (e.imgs || []);
+        return (
+          <div key={e.id} style={{background:T.chip, border:'1px solid '+T.border, borderRadius:8, padding:'10px 12px'}}>
+            {readOnly ? (
+              <div style={{marginBottom: imgs.length? 8 : 0}}>
+                {e.area ? <span style={{fontSize:12, color:T.text, fontWeight:600}}>{e.area}</span> : null}
+                {e.area && e.desc ? <span style={{color:T.textDim}}> - </span> : null}
+                {e.desc ? <span style={{fontSize:12, color:T.textMute}}>{e.desc}</span> : null}
+                {!e.area && !e.desc ? <span style={{fontSize:12, color:T.textDim, fontStyle:'italic'}}>(no description)</span> : null}
+              </div>
+            ) : (
+              <div style={{display:'flex', gap:8, alignItems:'flex-start', marginBottom:8}}>
+                <div style={{flex:1, display:'flex', flexDirection:'column', gap:6}}>
+                  <input value={e.area} onChange={function(ev){ setField(e.id, 'area', ev.target.value); }}
+                    placeholder="Area / item  (e.g. Left forearm scar, Hair)"
+                    style={{width:'100%', background:T.surface2, border:'1px solid '+T.border, borderRadius:5, padding:'6px 9px', fontSize:12, color:T.text}}/>
+                  <textarea value={e.desc} onChange={function(ev){ setField(e.id, 'desc', ev.target.value); }}
+                    placeholder="Description  (e.g. 3cm jagged scar, partly healed; hair slicked back)"
+                    rows={2}
+                    style={{width:'100%', background:T.surface2, border:'1px solid '+T.border, borderRadius:5, padding:'6px 9px', fontSize:12, color:T.text, resize:'vertical', fontFamily:'inherit', lineHeight:1.4}}/>
+                </div>
+                <button onClick={function(){ removeEntry(e.id); }} title="Remove item"
+                  style={{color:T.textDim, fontSize:14, lineHeight:1, padding:'2px 6px', background:'transparent', border:'1px solid '+T.border, borderRadius:5, cursor:'pointer', flexShrink:0}}
+                  onMouseEnter={function(ev){ ev.currentTarget.style.color=T.danger; }}
+                  onMouseLeave={function(ev){ ev.currentTarget.style.color=T.textDim; }}>x</button>
+              </div>
+            )}
+            <div style={{display:'flex', gap:8, flexWrap:'wrap', alignItems:'center'}}>
+              {imgs.map(function(iid){
+                const url = imgMap[iid];
+                return (
+                  <div key={iid} style={{width:72, height:54, borderRadius:6, overflow:'hidden', position:'relative', border:'1px solid '+T.border, background:T.surface2}}>
+                    {url ? <img src={url} style={{width:'100%', height:'100%', objectFit:'cover'}}/> : <div style={{width:'100%', height:'100%', display:'grid', placeItems:'center', fontSize:9, color:T.textDim}}>...</div>}
+                    {!readOnly && <button onClick={function(){ removeImage(e.id, iid); }}
+                      style={{position:'absolute', top:2, right:2, background:'rgba(0,0,0,0.7)', borderRadius:99, width:16, height:16, color:'white', fontSize:10, display:'grid', placeItems:'center', border:'none', cursor:'pointer'}}>x</button>}
+                  </div>
+                );
+              })}
+              {!readOnly && (
+                <>
+                  <div
+                    onPaste={function(ev){ const it=[...ev.clipboardData.items].find(function(i){ return i.type.indexOf('image/')===0; }); if(it){ addImage(e.id, it.getAsFile()); } }}
+                    onDragOver={function(ev){ ev.preventDefault(); }}
+                    onDrop={function(ev){ ev.preventDefault(); const f=ev.dataTransfer.files[0]; if(f){ addImage(e.id, f); } }}
+                    onClick={function(){ if(fileRefs.current[e.id]) fileRefs.current[e.id].click(); }}
+                    style={{width:72, height:54, borderRadius:6, border:'2px dashed '+T.border, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', cursor:'pointer', gap:2}}>
+                    <input ref={function(el){ fileRefs.current[e.id]=el; }} type="file" accept="image/*" style={{display:'none'}}
+                      onChange={function(ev){ const f=ev.target.files[0]; if(f){ addImage(e.id, f); } ev.target.value=''; }}/>
+                    <span style={{fontSize:16, opacity:0.5}}>+</span>
+                    <span style={{fontSize:8, fontFamily:"'Geist Mono',monospace", color:T.textDim}}>REF</span>
+                  </div>
+                  <button onClick={function(){ if(camRefs.current[e.id]) camRefs.current[e.id].click(); }}
+                    title="Take a photo"
+                    style={{width:72, height:54, borderRadius:6, border:'2px dashed '+T.accent+'66', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', cursor:'pointer', gap:2, background:T.accent+'10'}}>
+                    <input ref={function(el){ camRefs.current[e.id]=el; }} type="file" accept="image/*" capture="environment" style={{display:'none'}}
+                      onChange={function(ev){ const f=ev.target.files[0]; if(f){ addImage(e.id, f); } ev.target.value=''; }}/>
+                    <span style={{fontSize:15}}>{'\uD83D\uDCF7'}</span>
+                    <span style={{fontSize:8, fontFamily:"'Geist Mono',monospace", color:T.accent}}>PHOTO</span>
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        );
+      })}
+      {!readOnly && (
+        <button onClick={addEntry}
+          style={{alignSelf:'flex-start', padding:'6px 12px', borderRadius:6, border:'1px dashed '+T.border, color:T.textMute, fontSize:12, fontFamily:"'Geist Mono',monospace", cursor:'pointer', background:'transparent'}}
+          onMouseEnter={function(ev){ ev.currentTarget.style.color=T.text; ev.currentTarget.style.borderColor=T.accent; }}
+          onMouseLeave={function(ev){ ev.currentTarget.style.color=T.textMute; ev.currentTarget.style.borderColor=T.border; }}>
+          + Add makeup item
+        </button>
+      )}
+    </div>
+  );
+}
+
 function BDView(){
-  const {proj,updateProj}=useProj();
+  const {proj,updateProj,navTarget,clearNavTarget}=useProj();
   const mob=useMobile();
   function RefImage(riProps) {
     var images = riProps.images || [];
@@ -1728,7 +1952,17 @@ function BDView(){
   const [selCosKeys,setSelCosKeys]=useState(()=>new Set());
   const [mergeModal,setMergeModal]=useState(null);
   const [bdLeftWidth,setBdLeftWidth]=useState(220);
+  const [selSceneBD,setSelSceneBD]=useState(null);
   const bdResizing=React.useRef(false);
+
+  // Consume cross-view jump (e.g. Daily -> "View Breakdown" for a scene)
+  React.useEffect(()=>{
+    if(navTarget && navTarget.view==='breakdown'){
+      setTab(navTarget.tab || (navTarget.sceneId ? 'scenes' : 'locations'));
+      if(navTarget.sceneId) setSelSceneBD(navTarget.sceneId);
+      clearNavTarget();
+    }
+  },[navTarget, clearNavTarget]);
   const onBdResizeStart=(e)=>{
     bdResizing.current=true;
     const startX=e.clientX,startW=bdLeftWidth;
@@ -1813,7 +2047,7 @@ function BDView(){
 
   const sg=grouped.find(g=>g.loc.id===selLoc);
 
-  const TABS=[{id:'locations',label:'Locations',icon:'📍'},{id:'props',label:'Props',icon:'🎭'},{id:'costumes',label:'Costumes',icon:'👗'},{id:'characters',label:'Characters',icon:'👤'}];
+  const TABS=[{id:'scenes',label:'Scenes',icon:'🎬'},{id:'locations',label:'Locations',icon:'📍'},{id:'props',label:'Props',icon:'🎭'},{id:'costumes',label:'Costumes',icon:'👗'},{id:'characters',label:'Characters',icon:'👤'}];
 
   return(
     <div style={{height:'100%',display:'flex',flexDirection:'column'}}>
@@ -1827,6 +2061,124 @@ function BDView(){
           style={{width:mob?'100%':220,background:T.surface2,border:`1px solid ${T.border}`,borderRadius:6,padding:'5px 10px',fontSize:12,color:T.text,marginTop:mob?2:0}}/>
       </div>
       <div style={{flex:1,overflow:'hidden',display:'flex',flexDirection:mob?'column':'row'}}>
+
+        {tab==='scenes'&&<>
+          <div style={{width:mob?'100%':bdLeftWidth,flexShrink:0,overflow:'auto',padding:'8px 0',display:mob&&selSceneBD?'none':'block',maxHeight:mob?'45vh':undefined}}>
+            {(proj.scenes||[]).filter(s=>!q||contains(s.id)||contains(s.slug)).map(s=>{
+              const loc=findLoc(proj,s.locationId);
+              const nC=(s.characters||[]).length;
+              return(
+                <button key={s.id} onClick={()=>setSelSceneBD(s.id)} style={{width:'100%',padding:'9px 14px',textAlign:'left',background:selSceneBD===s.id?T.chip:'transparent',borderLeft:selSceneBD===s.id?`2px solid ${loc?.color||T.accent}`:'2px solid transparent',marginBottom:2}}>
+                  <div style={{display:'flex',alignItems:'center',gap:8}}>
+                    <span style={{fontFamily:"'Geist Mono',monospace",fontSize:10,color:T.textDim,flexShrink:0}}>{s.id}</span>
+                    <div style={{flex:1,overflow:'hidden'}}>
+                      <div style={{fontSize:12,color:selSceneBD===s.id?T.text:T.textMute,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{loc?.name||s.slug}</div>
+                      <div style={{fontSize:10,color:T.textDim,fontFamily:"'Geist Mono',monospace"}}>{s.timeOfDay} - {nC} char - {s.pages}p</div>
+                    </div>
+                    {loc&&<div style={{width:6,height:6,borderRadius:'50%',background:loc.color,flexShrink:0}}/>}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          <div onMouseDown={onBdResizeStart}
+            style={{width:5,flexShrink:0,cursor:'col-resize',background:'transparent',borderRight:`1px solid ${T.border}`,position:'relative',zIndex:10,transition:'background 0.15s',display:mob?'none':'block'}}
+            onMouseEnter={e=>{e.currentTarget.style.background=T.accent+'44';}}
+            onMouseLeave={e=>{e.currentTarget.style.background='transparent';}}>
+            <div style={{position:'absolute',top:'50%',left:'50%',transform:'translate(-50%,-50%)',width:3,height:32,borderRadius:2,background:T.border,opacity:0.7}}/>
+          </div>
+
+          <div style={{flex:1,overflow:'auto',padding:mob?12:24,minHeight:0}}>
+            {selSceneBD?(()=>{
+              const s=(proj.scenes||[]).find(x=>x.id===selSceneBD);
+              if(!s)return <div style={{color:T.textDim,fontSize:13}}>Scene not found.</div>;
+              const loc=findLoc(proj,s.locationId);
+              const sChars=(s.characters||[]).map(id=>findChar(proj,id)).filter(Boolean);
+              const sProps=s.props||[];
+              const sWard=s.wardrobe||[];
+              const sMu=s.makeup||[];
+              const secStyle={fontSize:10,color:T.textDim,fontFamily:"'Geist Mono',monospace",letterSpacing:'0.1em',marginBottom:8};
+              const cardStyle={background:T.panel,border:'1px solid '+T.border,borderRadius:8,padding:'12px 14px',marginBottom:12};
+              return(
+                <div>
+                  {mob&&<button onClick={()=>setSelSceneBD(null)} style={{color:T.accent,fontSize:11,fontFamily:"'Geist Mono',monospace",background:'transparent',border:'none',cursor:'pointer',padding:'0 0 10px',display:'block'}}>{'\u2190'} Back</button>}
+                  <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:16,flexWrap:'wrap'}}>
+                    <div style={{background:(loc?.color||T.accent)+'20',border:'1px solid '+(loc?.color||T.accent)+'44',borderRadius:5,padding:'3px 10px',fontFamily:"'Geist Mono',monospace",fontSize:12,color:loc?.color||T.accent}}>{s.id}</div>
+                    <div style={{fontFamily:"'Courier Prime',monospace",fontSize:mob?13:15,fontWeight:700,color:T.text}}>{s.slug}</div>
+                    <Pill>{s.timeOfDay}</Pill>
+                    <Pill>ACT {s.act}</Pill>
+                    <Pill>{s.pages}p</Pill>
+                  </div>
+
+                  <div style={cardStyle}>
+                    <div style={secStyle}>LOCATION</div>
+                    {loc?(
+                      <button onClick={()=>{setTab('locations');setSelLoc(loc.id);}} style={{display:'inline-flex',alignItems:'center',gap:8,padding:'6px 12px',borderRadius:7,background:T.chip,border:'1px solid '+T.border,cursor:'pointer'}}>
+                        <span style={{width:8,height:8,borderRadius:'50%',background:loc.color}}/>
+                        <span style={{fontSize:13,color:T.text}}>{loc.name}</span>
+                        <span style={{fontSize:10,color:T.textDim,fontFamily:"'Geist Mono',monospace"}}>{loc.type} {'\u2192'}</span>
+                      </button>
+                    ):<div style={{fontSize:12,color:T.textDim}}>No location set</div>}
+                  </div>
+
+                  <div style={cardStyle}>
+                    <div style={secStyle}>CHARACTERS ({sChars.length})</div>
+                    {sChars.length?(
+                      <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                        {sChars.map(c=>(
+                          <button key={c.id} onClick={()=>{setTab('characters');setSelChar(c.id);}} style={{display:'inline-flex',alignItems:'center',gap:6,padding:'5px 10px',borderRadius:99,background:c.color+'18',border:'1px solid '+c.color+'44',cursor:'pointer'}}>
+                            <span style={{width:18,height:18,borderRadius:4,background:c.color+'22',border:'1px solid '+c.color+'44',display:'grid',placeItems:'center',fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:10,color:c.color}}>{(c.name||'?')[0]}</span>
+                            <span style={{fontSize:12,color:T.text}}>{c.name}</span>
+                            <span style={{fontSize:10,color:T.textDim}}>{'\u2192'}</span>
+                          </button>
+                        ))}
+                      </div>
+                    ):<div style={{fontSize:12,color:T.textDim}}>None</div>}
+                  </div>
+
+                  <div style={cardStyle}>
+                    <div style={secStyle}>PROPS ({sProps.length})</div>
+                    {sProps.length?(
+                      <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                        {sProps.map((p,i)=>(
+                          <button key={i} onClick={()=>{setTab('props');setSelProp(p.name);}} style={{display:'inline-flex',alignItems:'center',gap:6,padding:'5px 10px',borderRadius:6,background:T.chip,border:'1px solid '+(p.critical?T.danger+'55':T.border),cursor:'pointer'}}>
+                            <span style={{width:6,height:6,borderRadius:'50%',background:p.critical?T.danger:T.warn}}/>
+                            <span style={{fontSize:12,color:T.text}}>{p.name}</span>
+                            {p.critical&&<span style={{fontSize:9,color:T.danger,fontFamily:"'Geist Mono',monospace"}}>{'\u2605'}</span>}
+                            <span style={{fontSize:10,color:T.textDim}}>{'\u2192'}</span>
+                          </button>
+                        ))}
+                      </div>
+                    ):<div style={{fontSize:12,color:T.textDim}}>None</div>}
+                  </div>
+
+                  <div style={cardStyle}>
+                    <div style={secStyle}>WARDROBE / MAKEUP (this scene)</div>
+                    {(sWard.length||sMu.length)?(
+                      <div style={{display:'grid',gap:8}}>
+                        {sChars.map(c=>{
+                          const w=sWard.find(ww=>ww.characterId===c.id);
+                          const mu=sMu.find(m=>m.characterId===c.id);
+                          if(!w&&!mu)return null;
+                          return(
+                            <div key={c.id} style={{display:'flex',gap:10,alignItems:'flex-start',padding:'8px 10px',background:T.chip,borderRadius:6}}>
+                              <span style={{fontSize:11,color:c.color,fontWeight:600,minWidth:64,flexShrink:0}}>{c.name}</span>
+                              <div style={{flex:1,fontSize:11,color:T.textMute,lineHeight:1.5}}>
+                                {w&&<div>{'\uD83D\uDC57'} {w.description}</div>}
+                                {mu&&<div>{'\uD83D\uDC84'} {mu.description}</div>}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ):<div style={{fontSize:12,color:T.textDim}}>No wardrobe / makeup notes for this scene. Set baseline makeup per character in the Characters tab.</div>}
+                  </div>
+                </div>
+              );
+            })():<div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100%',color:T.textDim,fontSize:13}}>Select a scene to see its breakdown</div>}
+          </div>
+        </>}
 
         {tab==='locations'&&<>
           <div style={{width:mob?'100%':bdLeftWidth,flexShrink:0,overflow:'auto',padding:'8px 0',display:mob&&selLoc?'none':'block',maxHeight:mob?'45vh':undefined}}>
@@ -2103,6 +2455,7 @@ function BDView(){
               const uniqueWards=[...new Set(charScenes.flatMap(s=>s.wardrobe?.filter(w=>w.characterId===selChar).map(w=>w.description)||[]))];
               return(
                 <div>
+                  {mob&&<button onClick={()=>setSelChar(null)} style={{color:T.accent,fontSize:11,fontFamily:"'Geist Mono',monospace",background:'transparent',border:'none',cursor:'pointer',padding:'0 0 10px',display:'block'}}>{'\u2190'} Back</button>}
                   <div style={{display:'flex',alignItems:'center',gap:14,marginBottom:18}}>
                     <div style={{width:48,height:48,borderRadius:10,background:char.color+'22',border:`1px solid ${char.color}44`,display:'grid',placeItems:'center',fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:26,color:char.color}}>{(char.name||'?')[0]}</div>
                     <div>
@@ -2115,6 +2468,14 @@ function BDView(){
                   <div style={{background:T.panel,border:`1px solid ${T.border}`,borderRadius:8,padding:'12px 14px',marginBottom:14}}>
                     <div style={{fontSize:10,color:T.textDim,fontFamily:"'Geist Mono',monospace",letterSpacing:'0.1em',marginBottom:8}}>CHARACTER REFERENCE</div>
                     <RefImage images={bdImgs('char',selChar)} onAdd={(img,i)=>addBDImage('char',selChar,img,i)}/>
+                  </div>
+                  <div style={{background:T.panel,border:`1px solid ${T.border}`,borderRadius:8,padding:'12px 14px',marginBottom:14}}>
+                    <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+                      <div style={{fontSize:10,color:T.textDim,fontFamily:"'Geist Mono',monospace",letterSpacing:'0.1em'}}>{(t.makeup||'MAKEUP / HAIR').toUpperCase()}</div>
+                      <div style={{flex:1}}/>
+                      <span style={{fontSize:9,color:T.textDim,fontFamily:"'Geist Mono',monospace"}}>shown as baseline in Continuity</span>
+                    </div>
+                    <MakeupSection charId={selChar} projId={proj._id} readOnly={false}/>
                   </div>
                   {uniqueWards.length>0&&(
                     <div style={{background:T.panel,border:`1px solid ${T.border}`,borderRadius:8,padding:'12px 14px',marginBottom:14}}>
@@ -2345,6 +2706,7 @@ function ContTimeline(){
 
 function ContCards(){
   const {proj}=useProj(); const t=useT();
+  const mob=useMobile();
   const [sel,setSel]=useState(null);
   useEffect(()=>{if(proj.characters?.length>0&&!sel)setSel(proj.characters[0].id);},[proj]);
   const char=proj.characters?.find(c=>c.id===sel);
@@ -2380,7 +2742,6 @@ function ContCards(){
             <div style={{display:'flex',alignItems:'center',gap:14,marginBottom:20}}>
               <div style={{width:48,height:48,borderRadius:10,background:char.color+'22',border:`1px solid ${char.color}44`,display:'grid',placeItems:'center',fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:26,color:char.color}}>{(char.name||'?')[0]}</div>
               <div>
-                {mob&&<button onClick={()=>setSelChar(null)} style={{color:T.accent,fontSize:11,fontFamily:"'Geist Mono',monospace",background:'transparent',border:'none',cursor:'pointer',padding:'0 0 10px',display:'block'}}>← Back</button>}
               <div style={{fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:mob?18:24,marginBottom:4,color:T.text}}>{char.name}</div>
                 {char.description&&<div style={{fontSize:12,color:T.textDim,marginBottom:6}}>{char.description}</div>}
                 <div style={{display:'flex',gap:8}}>
@@ -2388,6 +2749,10 @@ function ContCards(){
                   {missingW>0?<button onClick={jumpToMissing} title="Jump to first missing wardrobe entry" style={{display:'inline-flex',alignItems:'center',padding:'2px 9px',borderRadius:99,border:`1px solid ${T.danger}`,fontFamily:"'Geist Mono',monospace",fontSize:10,letterSpacing:'0.1em',color:T.danger,whiteSpace:'nowrap',background:T.danger+'10'}}>⚠ {missingW} {t.wardrobe.toLowerCase()} {t.missing.toLowerCase()}</button>:<Pill col={T.success}>✓ {t.wardrobeComplete}</Pill>}
                 </div>
               </div>
+            </div>
+            <div style={{background:T.panel,border:`1px solid ${T.border}`,borderRadius:8,padding:'12px 14px',marginBottom:14}}>
+              <div style={{fontSize:10,color:T.textDim,fontFamily:"'Geist Mono',monospace",letterSpacing:'0.1em',marginBottom:8}}>{(t.makeup||'MAKEUP / HAIR').toUpperCase()} {'\u00B7'} BASELINE</div>
+              <MakeupSection charId={sel} projId={proj._id} readOnly={true}/>
             </div>
             <div style={{display:'grid',gap:8}}>
               {charScenes.map((s,si)=>{
@@ -3436,6 +3801,23 @@ function ScheduleTab({schedule,setSchedule,startDate,setStartDate,endDate,setEnd
           </button>
           <div style={{fontFamily:"'Geist Mono',monospace",fontSize:10,color:T.textDim,marginBottom:3}}>{s.id} · {s.timeOfDay}</div>
           <div style={{fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:20,color:T.text,marginBottom:10,lineHeight:1.3}}>{s.slug}</div>
+          <div style={{display:'flex',gap:6,marginBottom:12,flexWrap:'wrap'}}>
+            <button onClick={()=>window.__sbNavigateTo?.('script',{sceneId:s.id})}
+              style={{display:'inline-flex',alignItems:'center',gap:5,padding:'4px 10px',borderRadius:5,background:T.chip,border:`1px solid ${T.border}`,color:T.textMute,fontSize:11,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}
+              onMouseEnter={e=>{e.currentTarget.style.color=T.text;}} onMouseLeave={e=>{e.currentTarget.style.color=T.textMute;}}>
+              {'\u2630'} Script
+            </button>
+            <button onClick={()=>window.__sbNavigateTo?.('breakdown',{sceneId:s.id,tab:'scenes'})}
+              style={{display:'inline-flex',alignItems:'center',gap:5,padding:'4px 10px',borderRadius:5,background:T.chip,border:`1px solid ${T.border}`,color:T.textMute,fontSize:11,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}
+              onMouseEnter={e=>{e.currentTarget.style.color=T.text;}} onMouseLeave={e=>{e.currentTarget.style.color=T.textMute;}}>
+              {'\u25EB'} Breakdown
+            </button>
+            <button onClick={()=>window.__sbNavigateTo?.('shots',{sceneId:s.id})}
+              style={{display:'inline-flex',alignItems:'center',gap:5,padding:'4px 10px',borderRadius:5,background:T.accent+'18',border:`1px solid ${T.accent}44`,color:T.accent,fontSize:11,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}
+              onMouseEnter={e=>{e.currentTarget.style.background=T.accent+'33';}} onMouseLeave={e=>{e.currentTarget.style.background=T.accent+'18';}}>
+              {'\uD83C\uDFAC'} Shots
+            </button>
+          </div>
           {loc&&<div style={{display:'flex',alignItems:'center',gap:7,marginBottom:10,padding:'6px 10px',background:T.chip,borderRadius:6}}>
             <div style={{width:8,height:8,borderRadius:'50%',background:loc.color,flexShrink:0}}/>
             <span style={{fontSize:12,color:T.text,flex:1}}>{loc.name}</span>
@@ -3535,6 +3917,24 @@ function ScheduleTab({schedule,setSchedule,startDate,setStartDate,endDate,setEnd
                     {s.slug?.replace(/^(INT|EXT)[./\s]*/i,'').slice(0,32)}
                   </span>
                   <span style={{fontSize:10,color:T.textDim,flexShrink:0}}>{s.pages}p</span>
+                  <button onClick={(e)=>{e.stopPropagation();window.__sbNavigateTo?.('script',{sceneId:id});}}
+                    title="View this scene in the Script"
+                    style={{color:T.textMute,fontSize:11,lineHeight:1,padding:'2px 6px',
+                      background:T.chip,border:`1px solid ${T.border}`,borderRadius:4,
+                      cursor:'pointer',flexShrink:0,fontFamily:"'Geist Mono',monospace"}}
+                    onMouseEnter={e=>{e.currentTarget.style.background=T.panelHi;e.currentTarget.style.color=T.text;}}
+                    onMouseLeave={e=>{e.currentTarget.style.background=T.chip;e.currentTarget.style.color=T.textMute;}}>
+                    {'\u2630\u2192'}
+                  </button>
+                  <button onClick={(e)=>{e.stopPropagation();window.__sbNavigateTo?.('breakdown',{sceneId:id,tab:'scenes'});}}
+                    title="View this scene's Breakdown"
+                    style={{color:T.textMute,fontSize:11,lineHeight:1,padding:'2px 6px',
+                      background:T.chip,border:`1px solid ${T.border}`,borderRadius:4,
+                      cursor:'pointer',flexShrink:0,fontFamily:"'Geist Mono',monospace"}}
+                    onMouseEnter={e=>{e.currentTarget.style.background=T.panelHi;e.currentTarget.style.color=T.text;}}
+                    onMouseLeave={e=>{e.currentTarget.style.background=T.chip;e.currentTarget.style.color=T.textMute;}}>
+                    {'\u25EB\u2192'}
+                  </button>
                   <button onClick={(e)=>{e.stopPropagation();window.__sbNavigateTo?.('shots',{sceneId:id});}}
                     title="Jump to Shot Board for this scene"
                     style={{color:T.accent,fontSize:11,lineHeight:1,padding:'2px 6px',
@@ -4389,11 +4789,22 @@ function DashView(){
    SCRIPT VIEW  -  proper screenplay formatting
 ═══════════════════════════════════════════════════════════ */
 function ScriptView(){
-  const {proj}=useProj();
+  const {proj,navTarget,clearNavTarget}=useProj();
   const mob=useMobile(); const t=useT();
   const [search,setSearch]=useState('');
   const [selScene,setSelScene]=useState(null);
   const bodyRefs=useRef({});
+
+  // Consume cross-view jump (e.g. Daily -> "View Script" for a scene)
+  React.useEffect(()=>{
+    if(navTarget && navTarget.view==='script' && navTarget.sceneId){
+      const sid=navTarget.sceneId;
+      setSearch('');
+      setSelScene(sid);
+      clearNavTarget();
+      setTimeout(()=>{ if(bodyRefs.current[sid]) bodyRefs.current[sid].scrollIntoView({behavior:'smooth',block:'start'}); }, 60);
+    }
+  },[navTarget, clearNavTarget]);
 
   const hlProps=useMemo(()=>{
     const s=new Set();
