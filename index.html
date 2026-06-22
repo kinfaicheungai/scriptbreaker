@@ -1573,6 +1573,33 @@ function GalleryRulesModal({rules, onSave, onClose}){
   );
 }
 
+/* ═══════════════════════════════════════════════════════════
+   NAV BACK BADGE — floats top-right when user jumped here
+   from another view (e.g. Daily). Shows "← Daily · SC XX".
+   Clicking returns to the origin view and restores context.
+═══════════════════════════════════════════════════════════ */
+function NavBackBadge(){
+  const {navFrom, navigateBack}=useProj();
+  if(!navFrom) return null;
+  const label=navFrom.label||navFrom.view;
+  return(
+    <button onClick={navigateBack}
+      style={{position:'fixed',top:14,right:16,zIndex:9000,
+        display:'inline-flex',alignItems:'center',gap:6,
+        padding:'6px 12px',borderRadius:99,
+        background:T.panel,border:`1px solid ${T.accent}55`,
+        color:T.accent,fontSize:11,fontFamily:"'Geist Mono',monospace",
+        letterSpacing:'0.08em',cursor:'pointer',
+        boxShadow:'0 2px 12px rgba(0,0,0,0.35)',
+        backdropFilter:'blur(8px)',
+        transition:'background 0.15s'}}
+      onMouseEnter={e=>{e.currentTarget.style.background=T.accent+'22';}}
+      onMouseLeave={e=>{e.currentTarget.style.background=T.panel;}}>
+      {'\u2190'} {label}
+    </button>
+  );
+}
+
 
 function ShotBoard(){
   const {navTarget,clearNavTarget}=useProj();
@@ -1686,6 +1713,7 @@ function ShotListSubTab({focusScene}){
 
   return(
     <div style={{height:'100%',display:'flex',flexDirection:'column'}}>
+      <NavBackBadge/>
       <div style={{padding:'6px 20px',borderBottom:`1px solid ${T.rule}`,display:'flex',gap:8,alignItems:'center',flexShrink:0,justifyContent:'space-between'}}>
         <div style={{display:'flex',gap:8,alignItems:'center',overflowX:'auto',flex:1}}>
         {[{id:'all',name:'All'},...(proj.locations||[])].map(l=>(
@@ -1917,6 +1945,7 @@ function MakeupSection(props){
 function BDView(){
   const {proj,updateProj,navTarget,clearNavTarget}=useProj();
   const mob=useMobile();
+  const t=useT();
   function RefImage(riProps) {
     var images = riProps.images || [];
     var onAdd = riProps.onAdd;
@@ -2051,6 +2080,7 @@ function BDView(){
 
   return(
     <div style={{height:'100%',display:'flex',flexDirection:'column'}}>
+      <NavBackBadge/>
       <div style={{padding:mob?'6px 8px':'8px 20px',borderBottom:`1px solid ${T.rule}`,display:'flex',gap:mob?3:4,flexShrink:0,flexWrap:'wrap'}}>
         {TABS.map(tb=>(
           <button key={tb.id} onClick={()=>setTab(tb.id)} style={{padding:mob?'5px 10px':'6px 14px',borderRadius:6,fontSize:mob?11:12,display:'flex',alignItems:'center',gap:4,background:tab===tb.id?T.chip:'transparent',color:tab===tb.id?T.text:T.textMute,border:`1px solid ${tab===tb.id?T.border:'transparent'}`}}>
@@ -3689,12 +3719,27 @@ function ScheduleTab({schedule,setSchedule,startDate,setStartDate,endDate,setEnd
   leftWidth,onResizeStart,getScene,getLoc,getChar,dayDate,fmtDate}){
 
   const mob=useMobile();
+  const {navTarget,clearNavTarget}=useProj();
   const [showPool,setShowPool]=React.useState(false);
   const [selDay,setSelDay]=React.useState(null);
   const [selScene,setSelScene]=React.useState(null);
   const [dragOverDay,setDragOverDay]=React.useState(null);
   const [reorderDrag,setReorderDrag]=React.useState(null);
   const [dragOverIdx,setDragOverIdx]=React.useState(null);
+
+  // Consume "return from jump" — e.g. user pressed ← Daily from Script/Breakdown/Shots
+  React.useEffect(()=>{
+    if(navTarget && navTarget.view==='daily' && navTarget.returnSceneId){
+      const sid=navTarget.returnSceneId;
+      // Find which day this scene is scheduled on
+      const dayEntry=Object.values(schedule.days||{}).find(d=>(d.scenes||[]).includes(sid));
+      if(dayEntry){
+        setSelDay(dayEntry.day);
+        setSelScene(sid);
+      }
+      clearNavTarget();
+    }
+  },[navTarget, clearNavTarget, schedule]);
 
   const reorderScene=(dayNum,fromIdx,toIdx)=>{
     if(fromIdx===toIdx)return;
@@ -3802,17 +3847,17 @@ function ScheduleTab({schedule,setSchedule,startDate,setStartDate,endDate,setEnd
           <div style={{fontFamily:"'Geist Mono',monospace",fontSize:10,color:T.textDim,marginBottom:3}}>{s.id} · {s.timeOfDay}</div>
           <div style={{fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:20,color:T.text,marginBottom:10,lineHeight:1.3}}>{s.slug}</div>
           <div style={{display:'flex',gap:6,marginBottom:12,flexWrap:'wrap'}}>
-            <button onClick={()=>window.__sbNavigateTo?.('script',{sceneId:s.id})}
+            <button onClick={()=>window.__sbNavigateTo?.('script',{sceneId:s.id,fromView:'daily',fromSceneId:s.id,fromLabel:`Daily\u00B7${s.id}`})}
               style={{display:'inline-flex',alignItems:'center',gap:5,padding:'4px 10px',borderRadius:5,background:T.chip,border:`1px solid ${T.border}`,color:T.textMute,fontSize:11,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}
               onMouseEnter={e=>{e.currentTarget.style.color=T.text;}} onMouseLeave={e=>{e.currentTarget.style.color=T.textMute;}}>
               {'\u2630'} Script
             </button>
-            <button onClick={()=>window.__sbNavigateTo?.('breakdown',{sceneId:s.id,tab:'scenes'})}
+            <button onClick={()=>window.__sbNavigateTo?.('breakdown',{sceneId:s.id,tab:'scenes',fromView:'daily',fromSceneId:s.id,fromLabel:`Daily\u00B7${s.id}`})}
               style={{display:'inline-flex',alignItems:'center',gap:5,padding:'4px 10px',borderRadius:5,background:T.chip,border:`1px solid ${T.border}`,color:T.textMute,fontSize:11,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}
               onMouseEnter={e=>{e.currentTarget.style.color=T.text;}} onMouseLeave={e=>{e.currentTarget.style.color=T.textMute;}}>
               {'\u25EB'} Breakdown
             </button>
-            <button onClick={()=>window.__sbNavigateTo?.('shots',{sceneId:s.id})}
+            <button onClick={()=>window.__sbNavigateTo?.('shots',{sceneId:s.id,fromView:'daily',fromSceneId:s.id,fromLabel:`Daily\u00B7${s.id}`})}
               style={{display:'inline-flex',alignItems:'center',gap:5,padding:'4px 10px',borderRadius:5,background:T.accent+'18',border:`1px solid ${T.accent}44`,color:T.accent,fontSize:11,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}
               onMouseEnter={e=>{e.currentTarget.style.background=T.accent+'33';}} onMouseLeave={e=>{e.currentTarget.style.background=T.accent+'18';}}>
               {'\uD83C\uDFAC'} Shots
@@ -3917,7 +3962,7 @@ function ScheduleTab({schedule,setSchedule,startDate,setStartDate,endDate,setEnd
                     {s.slug?.replace(/^(INT|EXT)[./\s]*/i,'').slice(0,32)}
                   </span>
                   <span style={{fontSize:10,color:T.textDim,flexShrink:0}}>{s.pages}p</span>
-                  <button onClick={(e)=>{e.stopPropagation();window.__sbNavigateTo?.('script',{sceneId:id});}}
+                  <button onClick={(e)=>{e.stopPropagation();window.__sbNavigateTo?.('script',{sceneId:id,fromView:'daily',fromSceneId:id,fromLabel:`Daily\u00B7${s.id}`});}}
                     title="View this scene in the Script"
                     style={{color:T.textMute,fontSize:11,lineHeight:1,padding:'2px 6px',
                       background:T.chip,border:`1px solid ${T.border}`,borderRadius:4,
@@ -3926,7 +3971,7 @@ function ScheduleTab({schedule,setSchedule,startDate,setStartDate,endDate,setEnd
                     onMouseLeave={e=>{e.currentTarget.style.background=T.chip;e.currentTarget.style.color=T.textMute;}}>
                     {'\u2630\u2192'}
                   </button>
-                  <button onClick={(e)=>{e.stopPropagation();window.__sbNavigateTo?.('breakdown',{sceneId:id,tab:'scenes'});}}
+                  <button onClick={(e)=>{e.stopPropagation();window.__sbNavigateTo?.('breakdown',{sceneId:id,tab:'scenes',fromView:'daily',fromSceneId:id,fromLabel:`Daily\u00B7${s.id}`});}}
                     title="View this scene's Breakdown"
                     style={{color:T.textMute,fontSize:11,lineHeight:1,padding:'2px 6px',
                       background:T.chip,border:`1px solid ${T.border}`,borderRadius:4,
@@ -3935,7 +3980,7 @@ function ScheduleTab({schedule,setSchedule,startDate,setStartDate,endDate,setEnd
                     onMouseLeave={e=>{e.currentTarget.style.background=T.chip;e.currentTarget.style.color=T.textMute;}}>
                     {'\u25EB\u2192'}
                   </button>
-                  <button onClick={(e)=>{e.stopPropagation();window.__sbNavigateTo?.('shots',{sceneId:id});}}
+                  <button onClick={(e)=>{e.stopPropagation();window.__sbNavigateTo?.('shots',{sceneId:id,fromView:'daily',fromSceneId:id,fromLabel:`Daily\u00B7${s.id}`});}}
                     title="Jump to Shot Board for this scene"
                     style={{color:T.accent,fontSize:11,lineHeight:1,padding:'2px 6px',
                       background:T.accent+'18',border:`1px solid ${T.accent}44`,borderRadius:4,
@@ -4881,8 +4926,7 @@ function ScriptView(){
 
   return(
     <div style={{height:'100%',display:'flex',position:'relative'}}>
-
-      {/* Mobile drawer backdrop */}
+      <NavBackBadge/>
       {mob&&drawerOpen&&(
         <div onClick={()=>setDrawerOpen(false)}
           style={{position:'absolute',inset:0,background:'rgba(0,0,0,0.45)',zIndex:200}}/>
@@ -5698,10 +5742,18 @@ function Shell({initProj,onBack,lang,setLang,dark,setDark}){
   const [view,setView]=useState('dashboard');
   const [showMerge,setShowMerge]=useState(false);
   const [navTarget,setNavTarget]=useState(null); // {view, sceneId, subTab} for cross-view jumps
+  const [navFrom,setNavFrom]=useState(null);    // {view, sceneId, label} — "where you jumped from"
   const mob=useMobile();
 
   // Jump to another view, optionally targeting a specific scene (e.g. Schedule -> Shot Board)
   const navigateTo=useCallback((targetView, opts={})=>{
+    // If caller says where we're jumping FROM, store it so destination can show a Back button
+    if(opts.fromView){
+      setNavFrom({view:opts.fromView, sceneId:opts.fromSceneId||null, label:opts.fromLabel||opts.fromView});
+    } else {
+      // Navigating manually (sidebar/tab) clears the "came from" breadcrumb
+      setNavFrom(null);
+    }
     setNavTarget({view:targetView, ...opts});
     setView(targetView);
   },[]);
@@ -5710,6 +5762,14 @@ function Shell({initProj,onBack,lang,setLang,dark,setDark}){
   React.useEffect(()=>{ window.__sbNavigateTo = navigateTo; return ()=>{ delete window.__sbNavigateTo; }; },[navigateTo]);
   // Called by the destination view once it has consumed the nav target
   const clearNavTarget=useCallback(()=>setNavTarget(null),[]);
+  // Go back to wherever we came from (navFrom), then clear it
+  const navigateBack=useCallback(()=>{
+    if(!navFrom) return;
+    const {view:backView, sceneId:backScene}=navFrom;
+    setNavFrom(null);
+    setNavTarget({view:backView, returnSceneId:backScene});
+    setView(backView);
+  },[navFrom]);
 
   const updateProj=useCallback((updater)=>{
     setProj(p=>{
@@ -5744,7 +5804,7 @@ function Shell({initProj,onBack,lang,setLang,dark,setDark}){
 
   return(
     <LangCtx.Provider value={lang}>
-      <Ctx.Provider value={{proj,updateProj,navTarget,navigateTo,clearNavTarget}}>
+      <Ctx.Provider value={{proj,updateProj,navTarget,navigateTo,clearNavTarget,navFrom,navigateBack}}>
         <div style={{display:'flex',height:mob?'100dvh':'100vh',overflow:'hidden',background:T.bg,flexDirection:mob?'column':'row'}}>
 
           {/* Sidebar - desktop only */}
