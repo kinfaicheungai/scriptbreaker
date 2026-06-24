@@ -816,6 +816,93 @@ async function makeupDeleteImage(projId, imgId){
 }
 
 /* ═══════════════════════════════════════════════════════════
+   ON-SET CONTINUITY PHOTOS — stored in IndexedDB (sb_cont).
+   Text notes (ward/makeup/status) stay in proj.contNotes so
+   they export with the project. Photos stay local/cloud only.
+   Key structure: projId::imgId  (unique per photo)
+   Indexes: projCell = projId::sceneId::charId  (per cell)
+═══════════════════════════════════════════════════════════ */
+const CONT_DB_NAME = 'sb_cont';
+const CONT_STORE   = 'photos';
+
+function openContDB(){
+  return new Promise((resolve,reject)=>{
+    const req=indexedDB.open(CONT_DB_NAME,1);
+    req.onupgradeneeded=()=>{
+      const db=req.result;
+      if(!db.objectStoreNames.contains(CONT_STORE)){
+        const s=db.createObjectStore(CONT_STORE,{keyPath:'key'});
+        s.createIndex('projCell','projCell',{unique:false});
+        s.createIndex('projId','projId',{unique:false});
+      }
+    };
+    req.onsuccess=()=>resolve(req.result);
+    req.onerror=()=>reject(req.error);
+  });
+}
+async function contPutPhoto(projId,item){
+  // item: {imgId, sceneId, charId, dataUrl, cloudUrl?}
+  const db=await openContDB();
+  const key=projId+'::'+item.imgId;
+  const projCell=projId+'::'+item.sceneId+'::'+item.charId;
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction(CONT_STORE,'readwrite');
+    tx.objectStore(CONT_STORE).put({key,projId,projCell,...item});
+    tx.oncomplete=()=>resolve();
+    tx.onerror=()=>reject(tx.error);
+  });
+}
+async function contGetPhotosForCell(projId,sceneId,charId){
+  const db=await openContDB();
+  const projCell=projId+'::'+sceneId+'::'+charId;
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction(CONT_STORE,'readonly');
+    const req=tx.objectStore(CONT_STORE).index('projCell').getAll(projCell);
+    req.onsuccess=()=>resolve(req.result||[]);
+    req.onerror=()=>reject(req.error);
+  });
+}
+async function contSetCloudUrl(projId,imgId,cloudUrl){
+  const db=await openContDB();
+  const key=projId+'::'+imgId;
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction(CONT_STORE,'readwrite');
+    const store=tx.objectStore(CONT_STORE);
+    const req=store.get(key);
+    req.onsuccess=()=>{
+      const rec=req.result;
+      if(rec){ rec.cloudUrl=cloudUrl; store.put(rec); }
+      tx.oncomplete=resolve;
+    };
+    req.onerror=()=>reject(req.error);
+  });
+}
+async function contDeletePhoto(projId,imgId){
+  const db=await openContDB();
+  const key=projId+'::'+imgId;
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction(CONT_STORE,'readwrite');
+    tx.objectStore(CONT_STORE).delete(key);
+    tx.oncomplete=()=>resolve();
+    tx.onerror=()=>reject(tx.error);
+  });
+}
+
+/* Upload a continuity dataUrl to Cloudinary folder cont_refs */
+async function uploadContPhoto(dataUrl){
+  const res=await fetch(dataUrl);
+  const blob=await res.blob();
+  const fd=new FormData();
+  fd.append('file',blob,'cont.jpg');
+  fd.append('upload_preset',CLOUDINARY_UPLOAD_PRESET);
+  fd.append('folder','cont_refs');
+  const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`,{method:'POST',body:fd});
+  if(!r.ok) throw new Error('Cont upload failed: '+r.status);
+  const d=await r.json();
+  return {url:d.secure_url,publicId:d.public_id};
+}
+
+/* ═══════════════════════════════════════════════════════════
    FILENAME PARSER - same logic as standalone Shot Reference
    Viewer, with configurable rules persisted to localStorage
 ═══════════════════════════════════════════════════════════ */
@@ -2652,6 +2739,207 @@ function BDView(){
   );
 }
 
+/* ═══════════════════════════════════════════════════════════
+   CONT SCENE CARD — one card per (scene × character).
+   Shows script-extracted info + on-set editable record.
+   Photos stored in sb_cont IDB; text in proj.contNotes.
+   Includes LAST SEEN reference so crew can match on set.
+═══════════════════════════════════════════════════════════ */
+function ContSceneCard({projId, scene, char, prevScene, compact}){
+  const {proj, updateProj}=useProj();
+  const note=(proj.contNotes?.[scene.id]?.[char.id])||{};
+  const prevNote=prevScene?(proj.contNotes?.[prevScene.id]?.[char.id])||{}:{};
+
+  const [myPhotos,setMyPhotos]=useState({});
+  const [prevPhotos,setPrevPhotos]=useState({});
+  const [uploading,setUploading]=useState({});
+  const [expanded,setExpanded]=useState(false);
+  const fileRef=useRef();
+  const camRef=useRef();
+
+  useEffect(()=>{
+    let alive=true;
+    contGetPhotosForCell(projId,scene.id,char.id).then(rows=>{
+      if(!alive)return;
+      const m={};rows.forEach(r=>{m[r.imgId]={dataUrl:r.dataUrl,cloudUrl:r.cloudUrl};});setMyPhotos(m);
+    }).catch(()=>{});
+    return ()=>{alive=false;};
+  },[projId,scene.id,char.id,(note.photoIds||[]).length]);
+
+  useEffect(()=>{
+    if(!prevScene){setPrevPhotos({});return;}
+    let alive=true;
+    contGetPhotosForCell(projId,prevScene.id,char.id).then(rows=>{
+      if(!alive)return;
+      const m={};rows.forEach(r=>{m[r.imgId]={dataUrl:r.dataUrl,cloudUrl:r.cloudUrl};});setPrevPhotos(m);
+    }).catch(()=>{});
+    return ()=>{alive=false;};
+  },[projId,prevScene?.id,char.id,(prevNote.photoIds||[]).length]);
+
+  function patch(obj){
+    updateProj(p=>{
+      const cn={...(p.contNotes||{})};
+      cn[scene.id]={...(cn[scene.id]||{})};
+      cn[scene.id][char.id]={...(cn[scene.id]?.[char.id]||{ward:'',makeup:'',status:'unset',notes:'',photoIds:[],cloudUrls:[]}),...obj};
+      return {...p,contNotes:cn};
+    });
+  }
+
+  async function addPhoto(file){
+    if(!file||!file.type.startsWith('image/'))return;
+    const dataUrl=await readAndResize(file,1200,1200,0.85);
+    const imgId='ct'+Date.now()+Math.floor(Math.random()*1000);
+    await contPutPhoto(projId,{imgId,sceneId:scene.id,charId:char.id,dataUrl});
+    patch({photoIds:[...(note.photoIds||[]),imgId]});
+  }
+
+  async function deletePhoto(imgId){
+    if(!confirm('Remove this photo?'))return;
+    await contDeletePhoto(projId,imgId);
+    patch({photoIds:(note.photoIds||[]).filter(x=>x!==imgId)});
+    setMyPhotos(p=>{const n={...p};delete n[imgId];return n;});
+  }
+
+  async function uploadPhoto(imgId){
+    const entry=myPhotos[imgId];
+    if(!entry||entry.cloudUrl)return;
+    setUploading(u=>({...u,[imgId]:true}));
+    try{
+      const {url}=await uploadContPhoto(entry.dataUrl);
+      await contSetCloudUrl(projId,imgId,url);
+      setMyPhotos(p=>({...p,[imgId]:{...p[imgId],cloudUrl:url}}));
+      patch({cloudUrls:[...(note.cloudUrls||[]),url]});
+    }catch(e){console.warn('Cont cloud upload error',e);}
+    setUploading(u=>({...u,[imgId]:false}));
+  }
+
+  const scriptWard=scene.wardrobe?.find(w=>w.characterId===char.id)?.description;
+  const scriptMakeup=scene.makeup?.find(m=>m.characterId===char.id)?.description;
+  const loc=findLoc(proj,scene.locationId);
+  const STATUS=[
+    {k:'unset',icon:'\u25A1',label:'Not confirmed',col:T.textDim},
+    {k:'ok',icon:'\u2705',label:'Confirmed',col:T.success},
+    {k:'check',icon:'\u26A0',label:'Needs check',col:T.warn},
+  ];
+  const curStatus=STATUS.find(s=>s.k===(note.status||'unset'))||STATUS[0];
+  const prevPhotoKeys=Object.keys(prevPhotos);
+
+  const sectionH={fontSize:9,fontFamily:"'Geist Mono',monospace",letterSpacing:'0.12em',color:T.textDim,marginBottom:5,display:'block'};
+  const inputSty={width:'100%',background:T.surface2,border:'1px solid '+T.border,borderRadius:5,padding:'6px 9px',fontSize:12,color:T.text,fontFamily:'inherit',lineHeight:1.4,resize:'vertical'};
+
+  return(
+    <div style={{background:T.panel,border:`1px solid ${T.border}`,borderRadius:8,overflow:'hidden',marginBottom:8,borderLeft:`3px solid ${note.status==='ok'?T.success:note.status==='check'?T.warn:T.border}`}}>
+      {/* Header */}
+      <div onClick={()=>setExpanded(e=>!e)} style={{padding:'8px 14px',display:'flex',alignItems:'center',gap:10,cursor:'pointer',borderBottom:`1px solid ${T.rule}`}}>
+        <span style={{fontFamily:"'Geist Mono',monospace",fontSize:10,color:T.textDim,background:T.chip,padding:'1px 6px',borderRadius:3,flexShrink:0}}>SC {String(scene.sceneNo).padStart(2,'0')}</span>
+        <span style={{fontSize:11,color:T.textMute,flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{scene.slug}</span>
+        {loc&&<span style={{width:6,height:6,borderRadius:'50%',background:loc.color,flexShrink:0}}/>}
+        <span style={{fontSize:10,color:curStatus.col,fontFamily:"'Geist Mono',monospace",flexShrink:0}}>{curStatus.icon}</span>
+        <span style={{fontSize:10,color:T.textDim,flexShrink:0}}>{expanded?'\u25B2':'\u25BC'}</span>
+      </div>
+
+      {expanded&&(
+        <div style={{padding:14}}>
+          {/* Status bar */}
+          <div style={{display:'flex',gap:6,marginBottom:12}}>
+            {STATUS.map(s=>(
+              <button key={s.k} onClick={()=>patch({status:s.k})}
+                style={{flex:1,padding:'5px 4px',borderRadius:6,border:`1px solid ${(note.status||'unset')===s.k?s.col:T.border}`,
+                  background:(note.status||'unset')===s.k?s.col+'18':'transparent',
+                  color:(note.status||'unset')===s.k?s.col:T.textDim,
+                  fontSize:10,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>
+                {s.icon} {s.label}
+              </button>
+            ))}
+          </div>
+
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14,marginBottom:12}}>
+            {/* Wardrobe */}
+            <div>
+              <span style={sectionH}>WARDROBE</span>
+              {scriptWard&&<div style={{fontSize:10,color:T.textDim,marginBottom:5,fontStyle:'italic',lineHeight:1.4}}>Script: {scriptWard}</div>}
+              <textarea value={note.ward||''} onChange={e=>patch({ward:e.target.value})}
+                placeholder={scriptWard||'On-set wardrobe\u2026'} rows={3} style={inputSty}/>
+            </div>
+            {/* Makeup */}
+            <div>
+              <span style={sectionH}>MAKEUP / HAIR</span>
+              {scriptMakeup&&<div style={{fontSize:10,color:T.textDim,marginBottom:5,fontStyle:'italic',lineHeight:1.4}}>Script: {scriptMakeup}</div>}
+              <textarea value={note.makeup||''} onChange={e=>patch({makeup:e.target.value})}
+                placeholder={scriptMakeup||'On-set makeup / hair\u2026'} rows={3} style={inputSty}/>
+            </div>
+          </div>
+
+          {/* Notes */}
+          <div style={{marginBottom:12}}>
+            <span style={sectionH}>NOTES</span>
+            <textarea value={note.notes||''} onChange={e=>patch({notes:e.target.value})}
+              placeholder="Extra notes\u2026" rows={2} style={inputSty}/>
+          </div>
+
+          {/* On-set photos */}
+          <div style={{marginBottom:prevPhotoKeys.length?12:0}}>
+            <span style={sectionH}>ON-SET PHOTOS</span>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap',alignItems:'center'}}>
+              {(note.photoIds||[]).map(iid=>{
+                const entry=myPhotos[iid];
+                const synced=entry?.cloudUrl;
+                return(
+                  <div key={iid} style={{width:72,height:54,borderRadius:6,overflow:'hidden',position:'relative',border:'1px solid '+T.border,background:T.surface2,flexShrink:0}}>
+                    {entry?.dataUrl?<img src={entry.dataUrl} style={{width:'100%',height:'100%',objectFit:'cover'}}/>:<div style={{width:'100%',height:'100%',display:'grid',placeItems:'center',fontSize:9,color:T.textDim}}>...</div>}
+                    <div style={{position:'absolute',top:0,right:0,display:'flex',gap:1,padding:2}}>
+                      {!synced&&!uploading[iid]&&(
+                        <button onClick={()=>uploadPhoto(iid)} title="Upload to cloud"
+                          style={{width:16,height:16,background:'rgba(0,0,0,0.75)',borderRadius:3,color:T.accent,fontSize:9,display:'grid',placeItems:'center',border:'none',cursor:'pointer'}}>\u2601</button>
+                      )}
+                      {uploading[iid]&&<div style={{width:16,height:16,background:'rgba(0,0,0,0.75)',borderRadius:3,display:'grid',placeItems:'center'}}><div style={{width:8,height:8,border:'1px solid '+T.accent,borderTopColor:'transparent',borderRadius:'50%',animation:'spin 0.8s linear infinite'}}/></div>}
+                      {synced&&<div title="Synced to cloud" style={{width:16,height:16,background:'rgba(0,0,0,0.75)',borderRadius:3,color:T.success,fontSize:9,display:'grid',placeItems:'center'}}>\u2601</div>}
+                      <button onClick={()=>deletePhoto(iid)} style={{width:16,height:16,background:'rgba(0,0,0,0.75)',borderRadius:3,color:'white',fontSize:10,display:'grid',placeItems:'center',border:'none',cursor:'pointer'}}>x</button>
+                    </div>
+                  </div>
+                );
+              })}
+              {/* Add photo (file) */}
+              <div onClick={()=>fileRef.current?.click()}
+                style={{width:72,height:54,borderRadius:6,border:'2px dashed '+T.border,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',cursor:'pointer',gap:2,flexShrink:0}}>
+                <input ref={fileRef} type="file" accept="image/*" style={{display:'none'}} onChange={e=>{addPhoto(e.target.files[0]);e.target.value='';}}/>
+                <span style={{fontSize:16,opacity:0.4}}>+</span>
+                <span style={{fontSize:8,fontFamily:"'Geist Mono',monospace",color:T.textDim}}>FILE</span>
+              </div>
+              {/* Camera */}
+              <button onClick={()=>camRef.current?.click()}
+                style={{width:72,height:54,borderRadius:6,border:'2px dashed '+T.accent+'66',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',cursor:'pointer',gap:2,background:T.accent+'10',flexShrink:0}}>
+                <input ref={camRef} type="file" accept="image/*" capture="environment" style={{display:'none'}} onChange={e=>{addPhoto(e.target.files[0]);e.target.value='';}}/>
+                <span style={{fontSize:14}}>{'\uD83D\uDCF7'}</span>
+                <span style={{fontSize:8,fontFamily:"'Geist Mono',monospace",color:T.accent}}>SHOOT</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Last seen reference */}
+          {prevScene&&(
+            <div style={{background:T.surface2,border:'1px solid '+T.border,borderRadius:6,padding:'8px 10px'}}>
+              <span style={{...sectionH,marginBottom:6}}>LAST SEEN \u2192 SC{String(prevScene.sceneNo).padStart(2,'0')} {prevScene.slug?.slice(0,40)}</span>
+              <div style={{fontSize:11,color:T.textMute,marginBottom:prevPhotoKeys.length?6:0,lineHeight:1.5}}>
+                {prevNote.ward||prevScene.wardrobe?.find(w=>w.characterId===char.id)?.description||'No wardrobe record'}
+              </div>
+              {prevPhotoKeys.length>0&&(
+                <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
+                  {prevPhotoKeys.map(iid=>{
+                    const p=prevPhotos[iid];
+                    return p?.dataUrl?<img key={iid} src={p.dataUrl} style={{width:64,height:48,objectFit:'cover',borderRadius:5,border:'1px solid '+T.border}}/>:null;
+                  })}
+                </div>
+              )}
+              {prevPhotoKeys.length===0&&<div style={{fontSize:10,color:T.textDim,fontStyle:'italic'}}>No reference photos yet for that scene.</div>}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ContMatrix(){
   const {proj}=useProj(); const t=useT();
   const scenes=proj.scenes||[];
@@ -2734,152 +3022,260 @@ function ContTimeline(){
   const {proj}=useProj(); const t=useT();
   const scenes=proj.scenes||[];
   const chars=proj.characters||[];
-  // Get unique story days
-  const storyDays=[...new Set(scenes.map(s=>s.shootDay||s.day||1).filter(Boolean))].sort((a,b)=>a-b);
+
+  // Build shoot-order columns grouped by shoot day
+  const dayGroups=useMemo(()=>{
+    const groups=[];
+    const scheduled=new Set();
+    (proj.shootDays||[]).slice().sort((a,b)=>a.day-b.day).forEach(d=>{
+      const ds=(d.scenes||[]).map(id=>scenes.find(s=>s.id===id)).filter(Boolean);
+      if(ds.length>0){groups.push({day:d.day,date:d.date||null,scenes:ds});ds.forEach(s=>scheduled.add(s.id));}
+    });
+    const unsc=scenes.filter(s=>!scheduled.has(s.id));
+    if(unsc.length>0) groups.push({day:null,date:null,scenes:unsc,label:'Unscheduled'});
+    return groups;
+  },[proj]);
+
+  // All columns in shoot order
+  const allCols=useMemo(()=>dayGroups.flatMap(g=>g.scenes),[dayGroups]);
+
+  // For each char × col, find continuity status vs prev col where char appeared (shoot order)
+  function colStatus(char,s,colIdx){
+    const inScene=(s.characters||[]).includes(char.id);
+    if(!inScene)return null;
+    const w=s.wardrobe?.find(ww=>ww.characterId===char.id);
+    let prevW=null;
+    for(let pi=colIdx-1;pi>=0;pi--){
+      if((allCols[pi].characters||[]).includes(char.id)){prevW=allCols[pi].wardrobe?.find(ww=>ww.characterId===char.id);break;}
+    }
+    const missing=!w;
+    const changed=!missing&&prevW&&w.description!==prevW.description;
+    return{w,missing,changed};
+  }
+
+  const DAY_COLS=['#6E91E8','#8B68D4','#D4689E','#D47E45','#6BAD8A','#7CC4C4','#B5AD5A','#A86BAD','#5A8FAD','#AD6B6B'];
+  const thBase={padding:'5px 6px',borderRight:'1px solid '+T.border,textAlign:'center',verticalAlign:'middle',fontFamily:"'Geist Mono',monospace",fontSize:10,whiteSpace:'nowrap'};
 
   return(
-    <div style={{height:'100%',overflow:'auto',padding:'16px 20px',minWidth:0}}>
-      <div style={{marginBottom:12,fontFamily:"'Geist Mono',monospace",fontSize:10,color:T.textDim,letterSpacing:'0.1em'}}>
-        SHOOT DAYS · {storyDays.length} DAYS
-        <span style={{marginLeft:16}}><span style={{color:T.warn}}>●</span> {t.changed}  <span style={{color:T.danger}}>●</span> {t.missing}</span>
+    <div style={{height:'100%',overflow:'auto',padding:'12px 0 12px 12px'}}>
+      <div style={{marginBottom:8,fontFamily:"'Geist Mono',monospace",fontSize:10,color:T.textDim,letterSpacing:'0.1em',paddingLeft:4}}>
+        {t.changed?<><span style={{color:T.warn}}>● {t.changed}</span> <span style={{marginLeft:12,color:T.danger}}>● {t.missing}</span></>:null}
+        {(proj.shootDays||[]).length>0&&<span style={{marginLeft:12}}>{(proj.shootDays||[]).length} SHOOT DAYS · {allCols.length} SCENES</span>}
       </div>
-      {/* Day header row */}
-      <div style={{display:'grid',gridTemplateColumns:`160px repeat(${scenes.length},minmax(22px,1fr))`,gap:2,marginBottom:4,minWidth:`${160+scenes.length*22}px`}}>
-        <div/>
-        {scenes.map(s=>{
-          const actCol=ACT_COLORS[(s.act||1)-1];
-          return(
-            <div key={s.id} style={{textAlign:'center',fontFamily:"'Geist Mono',monospace",fontSize:10,color:actCol,letterSpacing:'0.08em',padding:'2px 0'}}>{s.id}</div>
-          );
-        })}
-      </div>
-      {/* Character rows */}
-      {chars.map(char=>{
-        const sceneCount=scenes.filter(s=>(s.characters||[]).includes(char.id)).length;
-        return(
-          <div key={char.id} style={{display:'grid',gridTemplateColumns:`160px repeat(${scenes.length},minmax(22px,1fr))`,gap:2,marginBottom:6,alignItems:'center',minWidth:`${160+scenes.length*22}px`}}>
-            <div style={{display:'flex',alignItems:'center',gap:6,paddingRight:10}}>
-              <div style={{width:22,height:22,borderRadius:4,background:char.color+'22',border:`1px solid ${char.color}44`,display:'grid',placeItems:'center',fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:12,color:char.color,flexShrink:0}}>{(char.name||'?')[0]}</div>
-              <div style={{flex:1,overflow:'hidden'}}>
-                <div style={{fontSize:11,color:T.text,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{char.name}</div>
-                <div style={{fontFamily:"'Geist Mono',monospace",fontSize:10,color:T.textDim}}>{sceneCount} SC</div>
-              </div>
-            </div>
-            {scenes.map((s,si)=>{
-              const inScene=(s.characters||[]).includes(char.id);
-              if(!inScene) return <div key={s.id} style={{height:32}}/>;
-              const w=s.wardrobe?.find(ww=>ww.characterId===char.id);
-              let prevW=null;
-              for(let pi=si-1;pi>=0;pi--){
-                if((scenes[pi].characters||[]).includes(char.id)){prevW=scenes[pi].wardrobe?.find(ww=>ww.characterId===char.id);break;}
-              }
-              const changed=prevW&&w&&prevW.description!==w.description;
-              const missing=!w;
-              const bg=missing?T.danger:changed?T.warn:char.color;
+      <table style={{borderCollapse:'separate',borderSpacing:0,minWidth:'100%'}}>
+        <thead>
+          {/* Row 1: Day group headers */}
+          <tr>
+            <th style={{...thBase,position:'sticky',left:0,top:0,zIndex:4,background:T.panel,width:160,minWidth:160,textAlign:'left',borderBottom:'1px solid '+T.rule,borderRight:'1px solid '+T.border,padding:'6px 12px'}}><Mono s={{color:T.textDim}}>CHARACTER</Mono></th>
+            {dayGroups.map((g,gi)=>{
+              const col=DAY_COLS[gi%DAY_COLS.length];
+              const label=g.day!=null?('DAY '+g.day+(g.date?' \u00B7 '+new Date(g.date+'T00:00:00').toLocaleDateString('en-AU',{month:'short',day:'numeric'}):'')):(g.label||'Unscheduled');
               return(
-                <div key={s.id} title={w?.description||t.missing} style={{height:32,borderRadius:4,background:bg+'25',border:`1px solid ${bg}50`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,color:bg,fontFamily:"'Geist Mono',monospace",overflow:'hidden',padding:'0 4px'}}>
-                  {missing?'!':changed?`${si+1}→`:`${si+1}`}
-                </div>
+                <th key={g.day??'u'} colSpan={g.scenes.length}
+                  style={{...thBase,position:'sticky',top:0,zIndex:3,background:T.panel,borderBottom:'1px solid '+T.rule,borderTop:'2px solid '+col,color:col,letterSpacing:'0.08em'}}>
+                  {label}
+                </th>
               );
             })}
-          </div>
-        );
-      })}
+          </tr>
+          {/* Row 2: Scene IDs */}
+          <tr>
+            <th style={{...thBase,position:'sticky',left:0,top:28,zIndex:4,background:T.surface2,textAlign:'left',padding:'4px 12px',borderBottom:'1px solid '+T.rule}}><Mono s={{color:T.textDim}}>Scene</Mono></th>
+            {allCols.map(s=>{
+              const actCol=ACT_COLORS[(s.act||1)-1];
+              return(
+                <th key={s.id} style={{...thBase,position:'sticky',top:28,zIndex:2,background:T.surface2,borderBottom:'1px solid '+T.rule,color:actCol}}>
+                  <div>{s.id}</div>
+                  <div style={{fontSize:9,color:T.textDim,marginTop:1}}>{s.timeOfDay?.slice(0,2)}</div>
+                </th>
+              );
+            })}
+          </tr>
+        </thead>
+        <tbody>
+          {chars.map((char,ci)=>(
+            <tr key={char.id} style={{background:ci%2===0?T.bg:T.surface2+'88'}}>
+              <td style={{...thBase,position:'sticky',left:0,zIndex:1,background:ci%2===0?T.bg:T.surface2+'88',textAlign:'left',padding:'7px 12px',borderBottom:'1px solid '+T.rule}}>
+                <div style={{display:'flex',alignItems:'center',gap:7}}>
+                  <div style={{width:20,height:20,borderRadius:4,background:char.color+'22',border:'1px solid '+char.color+'44',display:'grid',placeItems:'center',fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:11,color:char.color,flexShrink:0}}>{(char.name||'?')[0]}</div>
+                  <span style={{fontSize:11,color:T.text,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',maxWidth:110}}>{char.name}</span>
+                </div>
+              </td>
+              {allCols.map((s,ci2)=>{
+                const st=colStatus(char,s,ci2);
+                if(!st)return <td key={s.id} style={{...thBase,borderBottom:'1px solid '+T.rule,background:'transparent'}}><span style={{color:T.textDim,opacity:0.3}}>-</span></td>;
+                const bg=st.missing?T.danger:st.changed?T.warn:char.color;
+                const tip=(st.w?.description||t.missing||'Missing')+(st.changed?' (changed)':'');
+                return(
+                  <td key={s.id} title={tip} style={{...thBase,borderBottom:'1px solid '+T.rule,padding:'5px 4px'}}>
+                    <div style={{minWidth:32,height:30,borderRadius:4,background:bg+'22',border:'1px solid '+bg+'55',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:1}}>
+                      <span style={{fontSize:10,color:bg,fontWeight:600}}>{st.missing?'!':st.changed?'\u21D5':'\u2713'}</span>
+                      {st.changed&&<span style={{fontSize:8,color:T.warn}}>chg</span>}
+                    </div>
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
 
 function ContCards(){
-  const {proj}=useProj(); const t=useT();
+  const {proj}=useProj();
   const mob=useMobile();
-  const [sel,setSel]=useState(null);
-  useEffect(()=>{if(proj.characters?.length>0&&!sel)setSel(proj.characters[0].id);},[proj]);
-  const char=proj.characters?.find(c=>c.id===sel);
-  const charScenes=proj.scenes?.filter(s=>(s.characters||[]).includes(sel))||[];
-  const missingScenes=charScenes.filter(s=>!s.wardrobe?.find(w=>w.characterId===sel));
-  const missingW=missingScenes.length;
-  const cardRefs=useRef({});
-  const jumpToMissing=()=>{
-    const first=missingScenes[0];
-    if(first&&cardRefs.current[first.id]) cardRefs.current[first.id].scrollIntoView({behavior:'smooth',block:'center'});
-  };
+  const [mode,setMode]=useState('char'); // 'char' | 'day'
+  const [selChar,setSelChar]=useState(null);
+  const [selDay,setSelDay]=useState(null);
+
+  const scenes=proj.scenes||[];
+  const chars=proj.characters||[];
+  const shootDays=(proj.shootDays||[]).slice().sort((a,b)=>a.day-b.day);
+
+  // Build shoot-order index: scenes sorted by (day, then position-within-day)
+  const shootOrder=useMemo(()=>{
+    const ordered=[];
+    const seen=new Set();
+    shootDays.forEach(d=>{(d.scenes||[]).forEach(id=>{const s=scenes.find(x=>x.id===id);if(s&&!seen.has(id)){ordered.push(s);seen.add(id);}});});
+    scenes.forEach(s=>{if(!seen.has(s.id))ordered.push(s);});
+    return ordered;
+  },[proj]);
+
+  // For a char, return their scenes in shoot order, each with prev scene in shoot order
+  function charShootCards(charId){
+    const cs=shootOrder.filter(s=>(s.characters||[]).includes(charId));
+    return cs.map((s,i)=>({scene:s,prev:i>0?cs[i-1]:null}));
+  }
+
+  // For a day, return all (char,scene) pairs appearing that day, grouped by char
+  function dayCards(dayNum){
+    const day=shootDays.find(d=>d.day===dayNum);
+    if(!day)return[];
+    const sceneIds=day.scenes||[];
+    const pairs=[];
+    chars.forEach(ch=>{
+      const charScenes=sceneIds.map(id=>scenes.find(s=>s.id===id)).filter(s=>s&&(s.characters||[]).includes(ch.id));
+      if(charScenes.length===0)return;
+      charScenes.forEach(s=>{
+        // prev scene for this char in shoot order before this day
+        const shootIdx=shootOrder.indexOf(s);
+        let prev=null;
+        for(let i=shootIdx-1;i>=0;i--){if((shootOrder[i].characters||[]).includes(ch.id)){prev=shootOrder[i];break;}}
+        pairs.push({char:ch,scene:s,prev});
+      });
+    });
+    return pairs;
+  }
+
+  useEffect(()=>{if(chars.length&&!selChar)setSelChar(chars[0].id);},[chars]);
+  useEffect(()=>{if(shootDays.length&&!selDay)setSelDay(shootDays[0].day);},[shootDays]);
+
+  const btnSty=(active)=>({padding:'5px 14px',borderRadius:6,border:'1px solid '+(active?T.accent:T.border),background:active?T.accent+'18':'transparent',color:active?T.accent:T.textMute,fontSize:11,fontFamily:"'Geist Mono',monospace",cursor:'pointer'});
 
   return(
-    <div style={{height:'100%',display:'flex'}}>
-      <div style={{width:190,flexShrink:0,borderRight:`1px solid ${T.border}`,overflow:'auto',padding:'8px 0'}}>
-        {proj.characters?.map(c=>{
-          const cScenes=proj.scenes?.filter(s=>(s.characters||[]).includes(c.id))||[];
-          const miss=cScenes.filter(s=>!s.wardrobe?.find(w=>w.characterId===c.id)).length;
-          return(
-            <button key={c.id} onClick={()=>setSel(c.id)} style={{width:'100%',padding:'9px 14px',textAlign:'left',background:sel===c.id?T.chip:'transparent',borderLeft:sel===c.id?`2px solid ${c.color}`:'2px solid transparent',marginBottom:2}}>
-              <div style={{display:'flex',alignItems:'center',gap:7}}>
-                <div style={{width:20,height:20,borderRadius:4,background:c.color+'22',border:`1px solid ${c.color}44`,display:'grid',placeItems:'center',fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:11,color:c.color,flexShrink:0}}>{(c.name||'?')[0]}</div>
-                <span style={{flex:1,fontSize:11,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:sel===c.id?T.text:T.textMute}}>{c.name}</span>
-                {miss>0&&<span style={{width:15,height:15,borderRadius:'50%',background:T.danger,display:'grid',placeItems:'center',fontSize:10,color:'white',flexShrink:0}}>{miss}</span>}
-              </div>
-            </button>
-          );
-        })}
+    <div style={{height:'100%',display:'flex',flexDirection:'column'}}>
+      {/* Mode tab bar */}
+      <div style={{padding:'8px 16px',borderBottom:'1px solid '+T.rule,display:'flex',gap:6,flexShrink:0}}>
+        <button style={btnSty(mode==='char')} onClick={()=>setMode('char')}>{'\uD83D\uDC64'} By Character</button>
+        <button style={btnSty(mode==='day')} onClick={()=>setMode('day')}>{'\uD83D\uDCC5'} By Shoot Day</button>
       </div>
-      <div style={{flex:1,overflow:'auto',padding:24}}>
-        {char&&(
-          <>
-            <div style={{display:'flex',alignItems:'center',gap:14,marginBottom:20}}>
-              <div style={{width:48,height:48,borderRadius:10,background:char.color+'22',border:`1px solid ${char.color}44`,display:'grid',placeItems:'center',fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:26,color:char.color}}>{(char.name||'?')[0]}</div>
-              <div>
-              <div style={{fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:mob?18:24,marginBottom:4,color:T.text}}>{char.name}</div>
-                {char.description&&<div style={{fontSize:12,color:T.textDim,marginBottom:6}}>{char.description}</div>}
-                <div style={{display:'flex',gap:8}}>
-                  <Pill>{charScenes.length} scenes</Pill>
-                  {missingW>0?<button onClick={jumpToMissing} title="Jump to first missing wardrobe entry" style={{display:'inline-flex',alignItems:'center',padding:'2px 9px',borderRadius:99,border:`1px solid ${T.danger}`,fontFamily:"'Geist Mono',monospace",fontSize:10,letterSpacing:'0.1em',color:T.danger,whiteSpace:'nowrap',background:T.danger+'10'}}>⚠ {missingW} {t.wardrobe.toLowerCase()} {t.missing.toLowerCase()}</button>:<Pill col={T.success}>✓ {t.wardrobeComplete}</Pill>}
+
+      <div style={{flex:1,display:'flex',overflow:'hidden'}}>
+        {/* Left panel */}
+        <div style={{width:mob?'42%':180,flexShrink:0,borderRight:'1px solid '+T.border,overflow:'auto',padding:'6px 0'}}>
+          {mode==='char'&&chars.map(c=>{
+            const miss=shootOrder.filter(s=>(s.characters||[]).includes(c.id)&&!s.wardrobe?.find(w=>w.characterId===c.id)).length;
+            const confirmed=Object.values(proj.contNotes?.[c.id]||{}).filter(n=>n.status==='ok').length;
+            return(
+              <button key={c.id} onClick={()=>setSelChar(c.id)} style={{width:'100%',padding:'8px 12px',textAlign:'left',background:selChar===c.id?T.chip:'transparent',borderLeft:selChar===c.id?'2px solid '+c.color:'2px solid transparent'}}>
+                <div style={{display:'flex',alignItems:'center',gap:6}}>
+                  <div style={{width:20,height:20,borderRadius:4,background:c.color+'22',border:'1px solid '+c.color+'44',display:'grid',placeItems:'center',fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:11,color:c.color,flexShrink:0}}>{(c.name||'?')[0]}</div>
+                  <span style={{flex:1,fontSize:11,color:selChar===c.id?T.text:T.textMute,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{c.name}</span>
+                  {miss>0&&<span style={{fontSize:9,color:T.danger,fontFamily:"'Geist Mono',monospace"}}>{'!'}{miss}</span>}
                 </div>
+              </button>
+            );
+          })}
+          {mode==='day'&&(shootDays.length===0
+            ?<div style={{padding:16,fontSize:12,color:T.textDim}}>No shoot days scheduled yet.</div>
+            :shootDays.map(d=>{
+              const dayPairs=dayCards(d.day);
+              const totalCards=dayPairs.length;
+              const confirmed=dayPairs.filter(({char:ch,scene:s})=>(proj.contNotes?.[s.id]?.[ch.id]?.status)==='ok').length;
+              return(
+                <button key={d.day} onClick={()=>setSelDay(d.day)} style={{width:'100%',padding:'9px 12px',textAlign:'left',background:selDay===d.day?T.chip:'transparent',borderLeft:selDay===d.day?'2px solid '+T.accent:'2px solid transparent'}}>
+                  <div style={{fontFamily:"'Geist Mono',monospace",fontSize:11,color:selDay===d.day?T.accent:T.textMute}}>DAY {d.day}</div>
+                  <div style={{fontSize:10,color:T.textDim,marginTop:2}}>{totalCards} scenes \u00B7 {confirmed}/{totalCards} confirmed</div>
+                </button>
+              );
+            })
+          )}
+        </div>
+
+        {/* Right panel */}
+        <div style={{flex:1,overflow:'auto',padding:mob?10:16}}>
+          {mode==='char'&&(()=>{
+            const char=chars.find(c=>c.id===selChar);
+            if(!char)return <div style={{color:T.textDim,fontSize:13,padding:20}}>Select a character</div>;
+            const cards=charShootCards(char.id);
+            return(
+              <div>
+                {/* Character header + Makeup baseline */}
+                <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:14}}>
+                  <div style={{width:44,height:44,borderRadius:10,background:char.color+'22',border:'1px solid '+char.color+'44',display:'grid',placeItems:'center',fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:24,color:char.color,flexShrink:0}}>{(char.name||'?')[0]}</div>
+                  <div>
+                    <div style={{fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:mob?16:20,color:T.text}}>{char.name}</div>
+                    <div style={{fontSize:10,color:T.textDim,fontFamily:"'Geist Mono',monospace",marginTop:2}}>{cards.length} scenes in shoot order</div>
+                  </div>
+                </div>
+                <div style={{background:T.panel,border:'1px solid '+T.border,borderRadius:8,padding:'10px 12px',marginBottom:14}}>
+                  <div style={{fontSize:9,fontFamily:"'Geist Mono',monospace",letterSpacing:'0.12em',color:T.textDim,marginBottom:6}}>MAKEUP / HAIR \u00B7 BASELINE PROFILE</div>
+                  <MakeupSection charId={selChar} projId={proj._id} readOnly={true}/>
+                </div>
+                {cards.length===0&&<div style={{color:T.textDim,fontSize:12}}>This character has no scenes in the schedule.</div>}
+                {cards.map(({scene,prev},i)=>{
+                  const dayNum=scene.shootDay;
+                  const showDayHdr=i===0||(cards[i-1]?.scene?.shootDay!==dayNum);
+                  return(
+                    <div key={scene.id}>
+                      {showDayHdr&&dayNum&&<div style={{fontFamily:"'Geist Mono',monospace",fontSize:10,color:T.accent,letterSpacing:'0.12em',margin:'14px 0 6px',paddingLeft:2}}>{'--- DAY '+dayNum+' ---'}</div>}
+                      <ContSceneCard projId={proj._id} scene={scene} char={char} prevScene={prev}/>
+                    </div>
+                  );
+                })}
               </div>
-            </div>
-            <div style={{background:T.panel,border:`1px solid ${T.border}`,borderRadius:8,padding:'12px 14px',marginBottom:14}}>
-              <div style={{fontSize:10,color:T.textDim,fontFamily:"'Geist Mono',monospace",letterSpacing:'0.1em',marginBottom:8}}>{(t.makeup||'MAKEUP / HAIR').toUpperCase()} {'\u00B7'} BASELINE</div>
-              <MakeupSection charId={sel} projId={proj._id} readOnly={true}/>
-            </div>
-            <div style={{display:'grid',gap:8}}>
-              {charScenes.map((s,si)=>{
-                const w=s.wardrobe?.find(ww=>ww.characterId===sel);
-                const mu=s.makeup?.find(m=>m.characterId===sel);
-                const loc=findLoc(proj,s.locationId);
-                let prevW=null;
-                const prevIdx=charScenes.indexOf(s)-1;
-                if(prevIdx>=0) prevW=charScenes[prevIdx].wardrobe?.find(ww=>ww.characterId===sel);
-                const changed=prevW&&w&&prevW.description!==w.description;
-                return(
-                  <Card key={s.id} style={{borderLeft:changed?`3px solid ${T.warn}`:w?`3px solid ${T.success}`:`3px solid ${T.danger}`,boxShadow:!w?`0 0 0 1px ${T.danger}33`:undefined}}><div ref={el=>cardRefs.current[s.id]=el}></div>
-                    <div style={{padding:'9px 14px',borderBottom:`1px solid ${T.rule}`,display:'flex',alignItems:'center',gap:10}}>
-                      <Mono s={{color:T.textDim,background:T.chip,padding:'1px 6px',borderRadius:3,fontSize:10}}>SC {String(s.sceneNo).padStart(2,'0')}</Mono>
-                      <div style={{flex:1,fontFamily:"'Geist Mono',monospace",fontSize:10,color:T.textMute,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{s.slug}</div>
-                      <Tag>{s.timeOfDay}</Tag>
-                      {loc&&<div style={{width:6,height:6,borderRadius:'50%',background:loc.color}}/>}
-                      <Mono s={{color:T.textDim,fontSize:10}}>ACT {s.act}</Mono>
+            );
+          })()}
+
+          {mode==='day'&&(()=>{
+            const day=shootDays.find(d=>d.day===selDay);
+            if(!day)return <div style={{color:T.textDim,fontSize:13,padding:20}}>Select a shoot day</div>;
+            const pairs=dayCards(day.day);
+            if(pairs.length===0)return <div style={{color:T.textDim,fontSize:13,padding:20}}>No scenes scheduled for Day {day.day}.</div>;
+            // Group by character
+            const byChar={};
+            pairs.forEach(p=>{(byChar[p.char.id]=byChar[p.char.id]||{char:p.char,pairs:[]}).pairs.push(p);});
+            return(
+              <div>
+                <div style={{fontFamily:"'Geist Mono',monospace",fontSize:10,color:T.accent,letterSpacing:'0.12em',marginBottom:14}}>DAY {day.day} \u00B7 {pairs.length} SCENES \u00B7 {Object.keys(byChar).length} CHARACTERS</div>
+                {Object.values(byChar).map(({char,pairs:cps})=>(
+                  <div key={char.id} style={{marginBottom:20}}>
+                    <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,paddingBottom:6,borderBottom:'1px solid '+T.rule}}>
+                      <div style={{width:18,height:18,borderRadius:3,background:char.color+'22',border:'1px solid '+char.color+'44',display:'grid',placeItems:'center',fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:10,color:char.color}}>{(char.name||'?')[0]}</div>
+                      <span style={{fontSize:12,color:T.text,fontWeight:500}}>{char.name}</span>
+                      <span style={{fontSize:10,color:T.textDim,fontFamily:"'Geist Mono',monospace"}}>{cps.length} scene{cps.length>1?'s':''}</span>
                     </div>
-                    <div style={{padding:'12px 14px',display:'grid',gridTemplateColumns:'1fr 1fr',gap:14}}>
-                      <div>
-                        <Mono s={{color:T.textDim,display:'block',letterSpacing:'0.1em',marginBottom:5,fontSize:10}}>{t.wardrobe.toUpperCase()}</Mono>
-                        <div style={{fontSize:12,color:w?T.text:T.danger,lineHeight:1.5,display:'flex',gap:5}}>
-                          <span style={{flexShrink:0}}>{w?changed?'↕':'✓':'⚠'}</span>
-                          {w?.description||t.missing}
-                        </div>
-                        {changed&&<div style={{marginTop:4,fontSize:10,color:T.warn}}>↕ Changed from previous</div>}
-                      </div>
-                      <div>
-                        <Mono s={{color:T.textDim,display:'block',letterSpacing:'0.1em',marginBottom:5,fontSize:10}}>{t.makeup.toUpperCase()}</Mono>
-                        <div style={{fontSize:12,color:mu?T.text:T.textDim,lineHeight:1.5,display:'flex',gap:5}}>
-                          <span style={{flexShrink:0}}>{mu?'✓':'-'}</span>
-                          {mu?.description||' - '}
-                        </div>
-                      </div>
-                    </div>
-                  </Card>
-                );
-              })}
-            </div>
-          </>
-        )}
+                    {cps.map(({scene,prev})=>(
+                      <ContSceneCard key={scene.id} projId={proj._id} scene={scene} char={char} prevScene={prev}/>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
+        </div>
       </div>
     </div>
   );
