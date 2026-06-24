@@ -336,6 +336,52 @@ function normalizeProject(raw){
 }
 
 /* ═══════════════════════════════════════════════════════════
+   IMAGE RESIZE / COMPRESS HELPER
+   Resizes any image to max maxW x maxH pixels and exports as
+   JPEG (quality 0.82) to keep localStorage / IDB payloads small.
+   Phone photos are typically 3-5 MB as raw base64; after
+   resizing to <=1400px they compress to ~100-250 KB - safe for
+   localStorage and fast to render.
+   Returns a Promise<string> (data URL).
+═══════════════════════════════════════════════════════════ */
+function resizeToDataUrl(dataUrl, maxW, maxH, quality){
+  maxW = maxW || 1400;
+  maxH = maxH || 1400;
+  quality = quality || 0.82;
+  return new Promise(function(resolve, reject){
+    var img = new window.Image();
+    img.onload = function(){
+      var w = img.naturalWidth;
+      var h = img.naturalHeight;
+      var scale = Math.min(1, maxW / w, maxH / h);
+      var tw = Math.round(w * scale);
+      var th = Math.round(h * scale);
+      var canvas = document.createElement('canvas');
+      canvas.width = tw;
+      canvas.height = th;
+      var ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, tw, th);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.onerror = function(){ reject(new Error('Image load failed')); };
+    img.src = dataUrl;
+  });
+}
+
+/* Helper: read a File/Blob to base64, then compress.
+   Returns Promise<string>. */
+function readAndResize(file, maxW, maxH, quality){
+  return new Promise(function(resolve, reject){
+    var r = new FileReader();
+    r.onload = function(ev){
+      resizeToDataUrl(ev.target.result, maxW, maxH, quality).then(resolve).catch(reject);
+    };
+    r.onerror = function(){ reject(new Error('FileReader failed')); };
+    r.readAsDataURL(file);
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════
    SHARED UI
 ═══════════════════════════════════════════════════════════ */
 const Mono=({c,s,children})=><span style={{fontFamily:"'Geist Mono',monospace",fontSize:10,letterSpacing:'0.08em',color:c,...s}}>{children}</span>;
@@ -1685,8 +1731,8 @@ function ShotListSubTab({focusScene}){
   };
   const updateShot=(sceneId,shotId,ch)=>{updateProj(p=>({...p,scenes:p.scenes?.map(s=>s.id===sceneId?{...s,shots:(s.shots||[]).map(sh=>sh.id===shotId?{...sh,...ch}:sh)}:s)}));};
   const delShot=(sceneId,shotId)=>{updateProj(p=>({...p,scenes:p.scenes?.map(s=>s.id===sceneId?{...s,shots:(s.shots||[]).filter(sh=>sh.id!==shotId)}:s)}));};
-  const onPaste=(sceneId,shotId,e)=>{const item=[...e.clipboardData.items].find(i=>i.type.startsWith('image/'));if(!item)return;const r=new FileReader();r.onload=ev=>updateShot(sceneId,shotId,{refImageUrl:ev.target.result});r.readAsDataURL(item.getAsFile());};
-  const onDrop=(sceneId,shotId,e)=>{e.preventDefault();const f=e.dataTransfer.files[0];if(!f||!f.type.startsWith('image/'))return;const r=new FileReader();r.onload=ev=>updateShot(sceneId,shotId,{refImageUrl:ev.target.result});r.readAsDataURL(f);};
+  const onPaste=(sceneId,shotId,e)=>{const item=[...e.clipboardData.items].find(i=>i.type.startsWith('image/'));if(!item)return;readAndResize(item.getAsFile()).then(url=>updateShot(sceneId,shotId,{refImageUrl:url})).catch(()=>{});};
+  const onDrop=(sceneId,shotId,e)=>{e.preventDefault();const f=e.dataTransfer.files[0];if(!f||!f.type.startsWith('image/'))return;readAndResize(f).then(url=>updateShot(sceneId,shotId,{refImageUrl:url})).catch(()=>{});};
 
   const sceneRefs=useRef({});
   const contentRef=React.useRef();
@@ -1837,9 +1883,7 @@ function MakeupSection(props){
   }
   function addImage(entryId, file){
     if(!file || !file.type || file.type.indexOf('image/')!==0) return;
-    const r = new FileReader();
-    r.onload = function(ev){
-      const dataUrl = ev.target.result;
+    readAndResize(file).then(function(dataUrl){
       const imgId = 'im' + Date.now() + Math.floor(Math.random()*1000);
       makeupPutImage(projId, {imgId:imgId, charId:charId, dataUrl:dataUrl}).then(function(){
         setImgMap(function(prev){ const n = Object.assign({}, prev); n[imgId] = dataUrl; return n; });
@@ -1847,8 +1891,7 @@ function MakeupSection(props){
           return e.id===entryId ? Object.assign({}, e, {imgs:(e.imgs||[]).concat([imgId])}) : e;
         }); });
       });
-    };
-    r.readAsDataURL(file);
+    }).catch(function(err){ console.warn('MakeupSection resize error', err); });
   }
   function removeImage(entryId, imgId){
     makeupDeleteImage(projId, imgId);
@@ -1950,23 +1993,35 @@ function BDView(){
     var images = riProps.images || [];
     var onAdd = riProps.onAdd;
     var inputRef = React.useRef();
-    function addFile(e) { var f=e.target.files[0]; if(!f||!f.type.startsWith('image/'))return; var r=new FileReader(); r.onload=function(ev){onAdd(ev.target.result);}; r.readAsDataURL(f); }
-    function addPaste(e) { var item=[...e.clipboardData.items].find(function(i){return i.type.startsWith('image/');}); if(!item)return; var r=new FileReader(); r.onload=function(ev){onAdd(ev.target.result);}; r.readAsDataURL(item.getAsFile()); }
-    function addDrop(e) { e.preventDefault(); var f=e.dataTransfer.files[0]; if(!f||!f.type.startsWith('image/'))return; var r=new FileReader(); r.onload=function(ev){onAdd(ev.target.result);}; r.readAsDataURL(f); }
+    var camRef = React.useRef();
+    function handleFile(f) {
+      if(!f||!f.type.startsWith('image/'))return;
+      readAndResize(f).then(function(url){ onAdd(url); }).catch(function(err){ console.warn('RefImage resize error',err); });
+    }
+    function addFile(e) { handleFile(e.target.files[0]); e.target.value=''; }
+    function addPaste(e) { var item=[...e.clipboardData.items].find(function(i){return i.type.startsWith('image/');}); if(!item)return; handleFile(item.getAsFile()); }
+    function addDrop(e) { e.preventDefault(); handleFile(e.dataTransfer.files[0]); }
     return (
       <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
         {images.map(function(img,i){ return (
           <div key={i} style={{width:80,height:60,borderRadius:6,overflow:'hidden',position:'relative',border:'1px solid '+T.border}}>
             <img src={img} style={{width:'100%',height:'100%',objectFit:'cover'}}/>
-            <button onClick={function(){onAdd(null,i);}} style={{position:'absolute',top:2,right:2,background:'rgba(0,0,0,0.7)',borderRadius:99,width:16,height:16,color:'white',fontSize:10,display:'grid',placeItems:'center'}}>x</button>
+            <button onClick={function(){onAdd(null,i);}} style={{position:'absolute',top:2,right:2,background:'rgba(0,0,0,0.7)',borderRadius:99,width:16,height:16,color:'white',fontSize:10,display:'grid',placeItems:'center',border:'none',cursor:'pointer'}}>x</button>
           </div>
         );})}
-        <div onPaste={addPaste} onDragOver={function(e){e.preventDefault();}} onDrop={addDrop} onClick={function(){inputRef.current.click();}}
+        <div onPaste={addPaste} onDragOver={function(e){e.preventDefault();}} onDrop={addDrop}
+          onClick={function(){inputRef.current.click();}}
           style={{width:80,height:60,borderRadius:6,border:'2px dashed '+T.border,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',cursor:'pointer',gap:3}}>
           <input ref={inputRef} type="file" accept="image/*" style={{display:'none'}} onChange={addFile}/>
           <span style={{fontSize:18,opacity:0.5}}>+</span>
-          <span style={{fontSize:10,fontFamily:"'Geist Mono',monospace",color:T.textDim}}>REF IMAGE</span>
+          <span style={{fontSize:10,fontFamily:"'Geist Mono',monospace",color:T.textDim}}>REF</span>
         </div>
+        <button onClick={function(){camRef.current.click();}} title="Take a photo"
+          style={{width:80,height:60,borderRadius:6,border:'2px dashed '+T.accent+'66',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',cursor:'pointer',gap:3,background:T.accent+'10'}}>
+          <input ref={camRef} type="file" accept="image/*" capture="environment" style={{display:'none'}} onChange={addFile}/>
+          <span style={{fontSize:16}}>{'\uD83D\uDCF7'}</span>
+          <span style={{fontSize:9,fontFamily:"'Geist Mono',monospace",color:T.accent}}>PHOTO</span>
+        </button>
       </div>
     );
   }
@@ -3369,9 +3424,7 @@ function NoteModal({note, scenes, onSave, onClose, mob}){
     const file = e.target.files[0];
     if(!file) return;
     setImgLoading(true);
-    const reader = new FileReader();
-    reader.onload = ev => { setImageUrl(ev.target.result); setImgLoading(false); };
-    reader.readAsDataURL(file);
+    readAndResize(file).then(function(url){ setImageUrl(url); setImgLoading(false); }).catch(function(){ setImgLoading(false); });
   }
 
   function handleSubmit(){
