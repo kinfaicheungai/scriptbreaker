@@ -2197,6 +2197,31 @@ function BDView(){
 
   const q=bdSearch.trim().toLowerCase();
   const contains=(txt)=>(txt||'').toString().toLowerCase().includes(q);
+
+  // --- Sequences tab: group scenes into continuity blocks (scene.seqGroup) ---
+  const [seqSel,setSeqSel]=useState(null); // currently active group name (for assigning)
+  const seqColors=['#6E91E8','#8B68D4','#D4689E','#D47E45','#6BAD8A','#7CC4C4','#B5AD5A','#A86BAD','#5A8FAD','#AD6B6B'];
+  const seqGroupNames=useMemo(()=>{
+    const names=[];(proj.scenes||[]).forEach(s=>{if(s.seqGroup&&!names.includes(s.seqGroup))names.push(s.seqGroup);});
+    return names.sort();
+  },[proj]);
+  const seqColorFor=(name)=>{const i=seqGroupNames.indexOf(name);return i>=0?seqColors[i%seqColors.length]:T.border;};
+  const setSceneSeq=(sceneId,group)=>{
+    const v=(group||'').trim();
+    updateProj(p=>({...p,scenes:(p.scenes||[]).map(s=>s.id===sceneId?{...s,seqGroup:v||undefined}:s)}));
+  };
+  const addSceneToSeq=(sceneId)=>{ if(seqSel)setSceneSeq(sceneId,seqSel); };
+  const renameSeq=(oldName,newName)=>{
+    const v=(newName||'').trim();
+    updateProj(p=>({...p,scenes:(p.scenes||[]).map(s=>s.seqGroup===oldName?{...s,seqGroup:v||undefined}:s)}));
+    if(seqSel===oldName)setSeqSel(v||null);
+  };
+  const clearSeq=(name)=>{
+    if(!confirm('Remove sequence "'+name+'"? Scenes stay, only the grouping is cleared.'))return;
+    updateProj(p=>({...p,scenes:(p.scenes||[]).map(s=>s.seqGroup===name?{...s,seqGroup:undefined}:s)}));
+    if(seqSel===name)setSeqSel(null);
+  };
+
   const filteredGrouped=useMemo(()=>!q?grouped:grouped.filter(({loc,scenes})=>
     contains(loc.name)||contains(loc.type)||contains(loc.address)||scenes.some(s=>contains(s.id)||contains(s.slug)||contains(s.timeOfDay))
   ),[grouped,q]);
@@ -2218,7 +2243,7 @@ function BDView(){
 
   const sg=grouped.find(g=>g.loc.id===selLoc);
 
-  const TABS=[{id:'scenes',label:'Scenes',icon:'🎬'},{id:'locations',label:'Locations',icon:'📍'},{id:'props',label:'Props',icon:'🎭'},{id:'costumes',label:'Costumes',icon:'👗'},{id:'characters',label:'Characters',icon:'👤'}];
+  const TABS=[{id:'scenes',label:'Scenes',icon:'🎬'},{id:'sequences',label:'Sequences',icon:'🔗'},{id:'locations',label:'Locations',icon:'📍'},{id:'props',label:'Props',icon:'🎭'},{id:'costumes',label:'Costumes',icon:'👗'},{id:'characters',label:'Characters',icon:'👤'}];
 
   return(
     <div style={{height:'100%',display:'flex',flexDirection:'column'}}>
@@ -2349,6 +2374,81 @@ function BDView(){
                 </div>
               );
             })():<div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'100%',color:T.textDim,fontSize:13}}>Select a scene to see its breakdown</div>}
+          </div>
+        </>}
+
+        {tab==='sequences'&&<>
+          {/* Left: group manager */}
+          <div style={{width:mob?'100%':210,flexShrink:0,borderRight:`1px solid ${T.border}`,overflow:'auto',padding:'10px 10px',display:mob&&seqSel?'none':'block',maxHeight:mob?'40vh':undefined}}>
+            <div style={{fontSize:10,fontFamily:"'Geist Mono',monospace",letterSpacing:'0.1em',color:T.textDim,marginBottom:8}}>SEQUENCE GROUPS</div>
+            <div style={{fontSize:10,color:T.textDim,lineHeight:1.5,marginBottom:10}}>Pick a group, then tap scenes on the right to add them. Scenes in one group are treated as continuous (same look) for continuity.</div>
+            <button onClick={()=>{const n=prompt('New sequence name (e.g. attic-1, A):');if(n&&n.trim())setSeqSel(n.trim());}}
+              style={{width:'100%',padding:'7px 10px',borderRadius:6,border:`1px dashed ${T.accent}66`,background:T.accent+'10',color:T.accent,fontSize:11,fontFamily:"'Geist Mono',monospace",cursor:'pointer',marginBottom:10}}>
+              + New sequence
+            </button>
+            {seqGroupNames.length===0&&<div style={{fontSize:11,color:T.textDim,fontStyle:'italic'}}>No sequences yet.</div>}
+            {seqGroupNames.map(name=>{
+              const col=seqColorFor(name);
+              const cnt=(proj.scenes||[]).filter(s=>s.seqGroup===name).length;
+              const active=seqSel===name;
+              return(
+                <div key={name} onClick={()=>setSeqSel(active?null:name)}
+                  style={{padding:'8px 10px',borderRadius:6,marginBottom:5,cursor:'pointer',background:active?col+'22':T.chip,border:`1px solid ${active?col:T.border}`}}>
+                  <div style={{display:'flex',alignItems:'center',gap:7}}>
+                    <span style={{width:9,height:9,borderRadius:'50%',background:col,flexShrink:0}}/>
+                    <span style={{flex:1,fontSize:12,color:active?T.text:T.textMute,fontFamily:"'Geist Mono',monospace",overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}</span>
+                    <span style={{fontSize:10,color:T.textDim}}>{cnt}</span>
+                  </div>
+                  {active&&<div style={{display:'flex',gap:6,marginTop:8}}>
+                    <button onClick={(e)=>{e.stopPropagation();const nn=prompt('Rename sequence:',name);if(nn!==null)renameSeq(name,nn);}}
+                      style={{flex:1,padding:'3px 0',borderRadius:4,border:`1px solid ${T.border}`,background:'transparent',color:T.textMute,fontSize:10,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>rename</button>
+                    <button onClick={(e)=>{e.stopPropagation();clearSeq(name);}}
+                      style={{flex:1,padding:'3px 0',borderRadius:4,border:`1px solid ${T.danger}55`,background:'transparent',color:T.danger,fontSize:10,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>clear</button>
+                  </div>}
+                </div>
+              );
+            })}
+            {seqSel&&<div style={{marginTop:12,padding:'8px 10px',borderRadius:6,background:seqColorFor(seqSel)+'18',border:`1px solid ${seqColorFor(seqSel)}55`}}>
+              <div style={{fontSize:10,color:seqColorFor(seqSel),fontFamily:"'Geist Mono',monospace"}}>ASSIGNING TO: {seqSel}</div>
+              <div style={{fontSize:10,color:T.textDim,marginTop:3}}>Tap scenes on the right to add/remove.</div>
+            </div>}
+          </div>
+
+          {!mob&&<div onMouseDown={onBdResizeStart}
+            style={{width:5,flexShrink:0,cursor:'col-resize',background:'transparent',borderRight:`1px solid ${T.border}`,position:'relative',zIndex:10,display:mob?'none':'block'}}
+            onMouseEnter={e=>{e.currentTarget.style.background=T.accent+'44';}}
+            onMouseLeave={e=>{e.currentTarget.style.background='transparent';}}>
+            <div style={{position:'absolute',top:'50%',left:'50%',transform:'translate(-50%,-50%)',width:3,height:32,borderRadius:2,background:T.border,opacity:0.7}}/>
+          </div>}
+
+          {/* Right: scene list in story order, click to assign */}
+          <div style={{flex:1,overflow:'auto',padding:mob?10:16,minHeight:0}}>
+            {mob&&seqSel&&<button onClick={()=>setSeqSel(null)} style={{color:T.accent,fontSize:11,fontFamily:"'Geist Mono',monospace",background:'transparent',border:'none',cursor:'pointer',padding:'0 0 10px',display:'block'}}>{'\u2190'} Groups</button>}
+            <div style={{fontSize:10,fontFamily:"'Geist Mono',monospace",letterSpacing:'0.1em',color:T.textDim,marginBottom:10}}>
+              SCENES (story order){seqSel?<span style={{color:seqColorFor(seqSel)}}> {'\u00B7'} tap to toggle into "{seqSel}"</span>:<span> {'\u00B7'} select a group on the left first</span>}
+            </div>
+            {(proj.scenes||[]).slice().sort((a,b)=>(a.sceneNo||0)-(b.sceneNo||0)).filter(s=>!q||contains(s.id)||contains(s.slug)||contains(s.seqGroup)).map(s=>{
+              const col=s.seqGroup?seqColorFor(s.seqGroup):null;
+              const inActive=seqSel&&s.seqGroup===seqSel;
+              const loc=findLoc(proj,s.locationId);
+              return(
+                <div key={s.id}
+                  onClick={()=>{ if(!seqSel)return; if(s.seqGroup===seqSel){setSceneSeq(s.id,'');}else{addSceneToSeq(s.id);} }}
+                  style={{display:'flex',alignItems:'center',gap:10,padding:'8px 12px',borderRadius:7,marginBottom:4,
+                    cursor:seqSel?'pointer':'default',
+                    background:inActive?col+'22':T.chip,
+                    border:`1px solid ${inActive?col:T.border}`,
+                    borderLeft:s.seqGroup?`3px solid ${col}`:`1px solid ${T.border}`}}>
+                  <span style={{fontFamily:"'Geist Mono',monospace",fontSize:10,color:T.textDim,flexShrink:0,minWidth:42}}>SC {String(s.sceneNo).padStart(2,'0')}</span>
+                  <div style={{flex:1,overflow:'hidden'}}>
+                    <div style={{fontSize:12,color:T.text,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{s.slug}</div>
+                    <div style={{fontSize:10,color:T.textDim,fontFamily:"'Geist Mono',monospace"}}>{s.timeOfDay}{loc?' \u00B7 '+loc.name:''}</div>
+                  </div>
+                  {s.seqGroup&&<span style={{fontSize:10,color:col,fontFamily:"'Geist Mono',monospace",background:col+'1a',padding:'2px 8px',borderRadius:99,flexShrink:0}}>{'\uD83D\uDD17'} {s.seqGroup}</span>}
+                  {seqSel&&(inActive?<span style={{fontSize:13,color:col,flexShrink:0}}>{'\u2713'}</span>:<span style={{fontSize:15,color:T.textDim,flexShrink:0}}>+</span>)}
+                </div>
+              );
+            })}
           </div>
         </>}
 
@@ -2807,11 +2907,6 @@ function ContSceneCard({projId, scene, char, related, initialExpanded}){
     });
   }
 
-  function setSeqGroup(val){
-    const v=val.trim();
-    updateProj(p=>({...p,scenes:(p.scenes||[]).map(s=>s.id===scene.id?{...s,seqGroup:v||undefined}:s)}));
-  }
-
   async function addPhoto(file){
     if(!file||!file.type.startsWith('image/'))return;
     const dataUrl=await readAndResize(file,1200,1200,0.85);
@@ -2868,14 +2963,13 @@ function ContSceneCard({projId, scene, char, related, initialExpanded}){
 
       {expanded&&(
         <div style={{padding:14}}>
-          {/* Sequence group tag (continuity block) */}
-          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
-            <span style={{fontSize:9,fontFamily:"'Geist Mono',monospace",letterSpacing:'0.1em',color:T.textDim,flexShrink:0}}>SEQ GROUP</span>
-            <input value={scene.seqGroup||''} onChange={e=>setSeqGroup(e.target.value)}
-              placeholder="e.g. A, attic-1 (scenes that are continuous in story)"
-              style={{flex:1,background:T.surface2,border:'1px solid '+T.border,borderRadius:5,padding:'4px 9px',fontSize:11,color:T.text,fontFamily:"'Geist Mono',monospace"}}/>
-            {scene.seqGroup&&<span title="Continuity refs limited to this sequence" style={{fontSize:9,color:T.accent,fontFamily:"'Geist Mono',monospace",flexShrink:0}}>{'\uD83D\uDD17'} linked</span>}
-          </div>
+          {/* Sequence group indicator (read-only; assign in Breakdown > Sequences) */}
+          {scene.seqGroup&&(
+            <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
+              <span style={{fontSize:9,fontFamily:"'Geist Mono',monospace",letterSpacing:'0.1em',color:T.accent}}>{'\uD83D\uDD17'} SEQ {scene.seqGroup}</span>
+              <span style={{fontSize:9,color:T.textDim}}>continuity refs limited to this sequence</span>
+            </div>
+          )}
 
           {/* Status bar */}
           <div style={{display:'flex',gap:6,marginBottom:12}}>
