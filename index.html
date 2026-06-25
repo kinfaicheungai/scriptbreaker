@@ -2745,13 +2745,13 @@ function BDView(){
    Photos stored in sb_cont IDB; text in proj.contNotes.
    Includes LAST SEEN reference so crew can match on set.
 ═══════════════════════════════════════════════════════════ */
-function ContSceneCard({projId, scene, char, storyPrev, initialExpanded}){
+function ContSceneCard({projId, scene, char, related, initialExpanded}){
   const {proj, updateProj}=useProj();
   const note=(proj.contNotes?.[scene.id]?.[char.id])||{};
-  const prevNote=storyPrev?(proj.contNotes?.[storyPrev.id]?.[char.id])||{}:{};
+  const relatedList=related||[];
 
   const [myPhotos,setMyPhotos]=useState({});
-  const [prevPhotos,setPrevPhotos]=useState({});
+  const [refScenes,setRefScenes]=useState([]); // [{scene, ward, photos:[{url}]}] only ones WITH photos
   const [uploading,setUploading]=useState({});
   const [expanded,setExpanded]=useState(!!initialExpanded);
   const fileRef=useRef();
@@ -2759,30 +2759,57 @@ function ContSceneCard({projId, scene, char, storyPrev, initialExpanded}){
 
   useEffect(()=>{
     let alive=true;
+    const ids=note.photoIds||[];
+    const cloudMap=note.cloudMap||{};
     contGetPhotosForCell(projId,scene.id,char.id).then(rows=>{
       if(!alive)return;
-      const m={};rows.forEach(r=>{m[r.imgId]={dataUrl:r.dataUrl,cloudUrl:r.cloudUrl};});setMyPhotos(m);
-    }).catch(()=>{});
-    return ()=>{alive=false;};
-  },[projId,scene.id,char.id,(note.photoIds||[]).length]);
-
-  useEffect(()=>{
-    if(!storyPrev){setPrevPhotos({});return;}
-    let alive=true;
-    contGetPhotosForCell(projId,storyPrev.id,char.id).then(rows=>{
+      const m={};
+      rows.forEach(r=>{m[r.imgId]={dataUrl:r.dataUrl,cloudUrl:r.cloudUrl||cloudMap[r.imgId]};});
+      ids.forEach(iid=>{if(!m[iid]&&cloudMap[iid])m[iid]={dataUrl:null,cloudUrl:cloudMap[iid]};});
+      setMyPhotos(m);
+    }).catch(()=>{
       if(!alive)return;
-      const m={};rows.forEach(r=>{m[r.imgId]={dataUrl:r.dataUrl,cloudUrl:r.cloudUrl};});setPrevPhotos(m);
-    }).catch(()=>{});
+      const m={};ids.forEach(iid=>{if(cloudMap[iid])m[iid]={dataUrl:null,cloudUrl:cloudMap[iid]};});setMyPhotos(m);
+    });
     return ()=>{alive=false;};
-  },[projId,storyPrev?.id,char.id,(prevNote.photoIds||[]).length]);
+  },[projId,scene.id,char.id,(note.photoIds||[]).length,JSON.stringify(note.cloudMap||{})]);
+
+  // Load photos for ALL related candidate scenes; keep only those that actually have a photo.
+  const relKey=relatedList.map(s=>s.id).join(',');
+  useEffect(()=>{
+    let alive=true;
+    if(relatedList.length===0){setRefScenes([]);return;}
+    Promise.all(relatedList.map(rs=>{
+      const rnote=(proj.contNotes?.[rs.id]?.[char.id])||{};
+      const cloudMap=rnote.cloudMap||{};
+      const ids=rnote.photoIds||[];
+      return contGetPhotosForCell(projId,rs.id,char.id).then(rows=>{
+        const byId={};
+        rows.forEach(r=>{byId[r.imgId]={dataUrl:r.dataUrl,cloudUrl:r.cloudUrl||cloudMap[r.imgId]};});
+        ids.forEach(iid=>{if(!byId[iid]&&cloudMap[iid])byId[iid]={dataUrl:null,cloudUrl:cloudMap[iid]};});
+        const photos=Object.keys(byId).map(k=>byId[k]).filter(p=>p.dataUrl||p.cloudUrl);
+        const ward=rnote.ward||rs.wardrobe?.find(w=>w.characterId===char.id)?.description||'';
+        return {scene:rs, ward, photos, group:rs.seqGroup===scene.seqGroup&&!!scene.seqGroup};
+      }).catch(()=>({scene:rs,ward:'',photos:[],group:false}));
+    })).then(results=>{
+      if(!alive)return;
+      setRefScenes(results.filter(r=>r.photos.length>0));
+    });
+    return ()=>{alive=false;};
+  },[projId,relKey,char.id,scene.seqGroup]);
 
   function patch(obj){
     updateProj(p=>{
       const cn={...(p.contNotes||{})};
       cn[scene.id]={...(cn[scene.id]||{})};
-      cn[scene.id][char.id]={...(cn[scene.id]?.[char.id]||{ward:'',makeup:'',status:'unset',notes:'',photoIds:[],cloudUrls:[]}),...obj};
+      cn[scene.id][char.id]={...(cn[scene.id]?.[char.id]||{ward:'',makeup:'',status:'unset',notes:'',photoIds:[],cloudMap:{}}),...obj};
       return {...p,contNotes:cn};
     });
+  }
+
+  function setSeqGroup(val){
+    const v=val.trim();
+    updateProj(p=>({...p,scenes:(p.scenes||[]).map(s=>s.id===scene.id?{...s,seqGroup:v||undefined}:s)}));
   }
 
   async function addPhoto(file){
@@ -2790,25 +2817,27 @@ function ContSceneCard({projId, scene, char, storyPrev, initialExpanded}){
     const dataUrl=await readAndResize(file,1200,1200,0.85);
     const imgId='ct'+Date.now()+Math.floor(Math.random()*1000);
     await contPutPhoto(projId,{imgId,sceneId:scene.id,charId:char.id,dataUrl});
+    setMyPhotos(p=>({...p,[imgId]:{dataUrl}}));
     patch({photoIds:[...(note.photoIds||[]),imgId]});
   }
 
   async function deletePhoto(imgId){
     if(!confirm('Remove this photo?'))return;
     await contDeletePhoto(projId,imgId);
-    patch({photoIds:(note.photoIds||[]).filter(x=>x!==imgId)});
+    const cm={...(note.cloudMap||{})};delete cm[imgId];
+    patch({photoIds:(note.photoIds||[]).filter(x=>x!==imgId),cloudMap:cm});
     setMyPhotos(p=>{const n={...p};delete n[imgId];return n;});
   }
 
   async function uploadPhoto(imgId){
     const entry=myPhotos[imgId];
-    if(!entry||entry.cloudUrl)return;
+    if(!entry||!entry.dataUrl||entry.cloudUrl)return;
     setUploading(u=>({...u,[imgId]:true}));
     try{
       const {url}=await uploadContPhoto(entry.dataUrl);
       await contSetCloudUrl(projId,imgId,url);
       setMyPhotos(p=>({...p,[imgId]:{...p[imgId],cloudUrl:url}}));
-      patch({cloudUrls:[...(note.cloudUrls||[]),url]});
+      patch({cloudMap:{...(note.cloudMap||{}),[imgId]:url}});
     }catch(e){console.warn('Cont cloud upload error',e);}
     setUploading(u=>({...u,[imgId]:false}));
   }
@@ -2822,7 +2851,6 @@ function ContSceneCard({projId, scene, char, storyPrev, initialExpanded}){
     {k:'check',icon:'\u26A0',label:'Needs check',col:T.warn},
   ];
   const curStatus=STATUS.find(s=>s.k===(note.status||'unset'))||STATUS[0];
-  const prevPhotoKeys=Object.keys(prevPhotos);
 
   const sectionH={fontSize:9,fontFamily:"'Geist Mono',monospace",letterSpacing:'0.12em',color:T.textDim,marginBottom:5,display:'block'};
   const inputSty={width:'100%',background:T.surface2,border:'1px solid '+T.border,borderRadius:5,padding:'6px 9px',fontSize:12,color:T.text,fontFamily:'inherit',lineHeight:1.4,resize:'vertical'};
@@ -2840,6 +2868,15 @@ function ContSceneCard({projId, scene, char, storyPrev, initialExpanded}){
 
       {expanded&&(
         <div style={{padding:14}}>
+          {/* Sequence group tag (continuity block) */}
+          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
+            <span style={{fontSize:9,fontFamily:"'Geist Mono',monospace",letterSpacing:'0.1em',color:T.textDim,flexShrink:0}}>SEQ GROUP</span>
+            <input value={scene.seqGroup||''} onChange={e=>setSeqGroup(e.target.value)}
+              placeholder="e.g. A, attic-1 (scenes that are continuous in story)"
+              style={{flex:1,background:T.surface2,border:'1px solid '+T.border,borderRadius:5,padding:'4px 9px',fontSize:11,color:T.text,fontFamily:"'Geist Mono',monospace"}}/>
+            {scene.seqGroup&&<span title="Continuity refs limited to this sequence" style={{fontSize:9,color:T.accent,fontFamily:"'Geist Mono',monospace",flexShrink:0}}>{'\uD83D\uDD17'} linked</span>}
+          </div>
+
           {/* Status bar */}
           <div style={{display:'flex',gap:6,marginBottom:12}}>
             {STATUS.map(s=>(
@@ -2878,15 +2915,16 @@ function ContSceneCard({projId, scene, char, storyPrev, initialExpanded}){
           </div>
 
           {/* On-set photos */}
-          <div style={{marginBottom:storyPrev?12:0}}>
+          <div style={{marginBottom:refScenes.length?12:0}}>
             <span style={sectionH}>ON-SET PHOTOS <span style={{color:T.textDim,fontWeight:400,letterSpacing:0}}>· tap {'\u2601'} SYNC to back up</span></span>
             <div style={{display:'flex',gap:6,flexWrap:'wrap',alignItems:'center'}}>
               {(note.photoIds||[]).map(iid=>{
                 const entry=myPhotos[iid];
                 const synced=entry?.cloudUrl;
+                const showUrl=entry?.dataUrl||entry?.cloudUrl;
                 return(
                   <div key={iid} style={{width:72,height:54,borderRadius:6,overflow:'hidden',position:'relative',border:'1px solid '+T.border,background:T.surface2,flexShrink:0}}>
-                    {entry?.dataUrl?<img src={entry.dataUrl} style={{width:'100%',height:'100%',objectFit:'cover'}}/>:<div style={{width:'100%',height:'100%',display:'grid',placeItems:'center',fontSize:9,color:T.textDim}}>...</div>}
+                    {showUrl?<img src={showUrl} loading="lazy" style={{width:'100%',height:'100%',objectFit:'cover'}}/>:<div style={{width:'100%',height:'100%',display:'grid',placeItems:'center',fontSize:9,color:T.textDim}}>...</div>}
                     {/* Bottom bar: sync button or synced badge */}
                     <div style={{position:'absolute',bottom:0,left:0,right:0,padding:'2px 3px',background:'linear-gradient(transparent,rgba(0,0,0,0.65))'}}>
                       {!synced&&!uploading[iid]&&(
@@ -2919,25 +2957,33 @@ function ContSceneCard({projId, scene, char, storyPrev, initialExpanded}){
             </div>
           </div>
 
-          {/* Story-previous scene reference (script order, not shoot order) */}
-          {storyPrev&&(
+          {/* Continuity reference: already-shot scenes that share this look */}
+          {refScenes.length>0&&(
             <div style={{background:T.surface2,border:'1px solid '+T.border,borderRadius:6,padding:'8px 10px'}}>
-              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:5}}>
-                <span style={{fontSize:9,fontFamily:"'Geist Mono',monospace",letterSpacing:'0.1em',color:T.textDim}}>STORY PREV</span>
-                <span style={{fontSize:9,fontFamily:"'Geist Mono',monospace",color:T.accent}}>SC{String(storyPrev.sceneNo).padStart(2,'0')} {storyPrev.slug?.slice(0,34)}</span>
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
+                <span style={{fontSize:9,fontFamily:"'Geist Mono',monospace",letterSpacing:'0.1em',color:T.accent}}>{'\uD83D\uDD17'} CONTINUITY REF</span>
+                <span style={{fontSize:9,color:T.textDim}}>already-shot {scene.seqGroup?'scenes in this sequence':'nearby scenes'}</span>
               </div>
-              <div style={{fontSize:11,color:T.textMute,marginBottom:prevPhotoKeys.length?6:0,lineHeight:1.5}}>
-                {prevNote.ward||storyPrev.wardrobe?.find(w=>w.characterId===char.id)?.description||<span style={{fontStyle:'italic',color:T.textDim}}>No wardrobe record yet</span>}
+              <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                {refScenes.map(rf=>(
+                  <div key={rf.scene.id} style={{display:'flex',gap:8,alignItems:'flex-start'}}>
+                    <div style={{flexShrink:0,minWidth:52}}>
+                      <div style={{fontSize:10,fontFamily:"'Geist Mono',monospace",color:rf.group?T.accent:T.textMute}}>SC{String(rf.scene.sceneNo).padStart(2,'0')}</div>
+                      {rf.group&&<div style={{fontSize:8,color:T.accent,fontFamily:"'Geist Mono',monospace"}}>{rf.scene.seqGroup}</div>}
+                      {rf.scene.shootDay&&<div style={{fontSize:8,color:T.textDim}}>D{rf.scene.shootDay}</div>}
+                    </div>
+                    <div style={{flex:1,minWidth:0}}>
+                      {rf.ward&&<div style={{fontSize:10,color:T.textMute,marginBottom:4,lineHeight:1.4}}>{rf.ward}</div>}
+                      <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
+                        {rf.photos.map((p,pi)=>{
+                          const u=p.dataUrl||p.cloudUrl;
+                          return u?<img key={pi} src={u} loading="lazy" style={{width:60,height:45,objectFit:'cover',borderRadius:4,border:'1px solid '+T.border}}/>:null;
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                ))}
               </div>
-              {prevPhotoKeys.length>0&&(
-                <div style={{display:'flex',gap:5,flexWrap:'wrap'}}>
-                  {prevPhotoKeys.map(iid=>{
-                    const p=prevPhotos[iid];
-                    return p?.dataUrl?<img key={iid} src={p.dataUrl} style={{width:64,height:48,objectFit:'cover',borderRadius:5,border:'1px solid '+T.border}}/>:null;
-                  })}
-                </div>
-              )}
-              {prevPhotoKeys.length===0&&<div style={{fontSize:10,color:T.textDim,fontStyle:'italic'}}>No on-set photos yet for that scene.</div>}
             </div>
           )}
         </div>
@@ -3149,23 +3195,35 @@ function ContCards(){
     return ordered;
   },[proj]);
 
-  // For a char, return their scenes in SHOOT ORDER (for card grouping by day),
-  // but each card's storyPrev = the previous scene in SCRIPT/STORY order.
-  // This is what matters for continuity: "what did this character look like
-  // in the preceding story beat?" — not what was filmed yesterday.
-  function storyPrevFor(charId, sceneId){
-    // scenes array is already in script/story order
+  // Candidate continuity-reference scenes for (char, scene).
+  // Priority B: if scene has a seqGroup, use ALL other scenes in that group
+  //   where the char appears (a continuous story block -> same look).
+  // Fallback A: char's neighbouring scenes in story order (+/- 3),
+  //   so an already-shot nearby beat can serve as reference.
+  // The card itself filters these down to ones that actually have photos.
+  function relatedScenesFor(charId, scn){
     const charInStory=scenes.filter(s=>(s.characters||[]).includes(charId));
-    const idx=charInStory.findIndex(s=>s.id===sceneId);
-    return idx>0?charInStory[idx-1]:null;
+    const idx=charInStory.findIndex(s=>s.id===scn.id);
+    if(scn.seqGroup){
+      const group=charInStory.filter(s=>s.id!==scn.id&&s.seqGroup===scn.seqGroup);
+      // order: story-nearest first
+      return group.sort((a,b)=>Math.abs(charInStory.indexOf(a)-idx)-Math.abs(charInStory.indexOf(b)-idx));
+    }
+    if(idx<0)return [];
+    const out=[];
+    for(let d=1;d<=3;d++){
+      if(charInStory[idx-d])out.push(charInStory[idx-d]);
+      if(charInStory[idx+d])out.push(charInStory[idx+d]);
+    }
+    return out;
   }
 
   function charShootCards(charId){
     const cs=shootOrder.filter(s=>(s.characters||[]).includes(charId));
-    return cs.map(s=>({scene:s, storyPrev:storyPrevFor(charId,s.id)}));
+    return cs.map(s=>({scene:s, related:relatedScenesFor(charId,s)}));
   }
 
-  // For a day, return all (char,scene) pairs; storyPrev = story-order prev for each char
+  // For a day, return all (char,scene) pairs; related = candidate ref scenes
   function dayCards(dayNum){
     const day=shootDays.find(d=>d.day===dayNum);
     if(!day)return[];
@@ -3175,7 +3233,7 @@ function ContCards(){
       const charScenes=sceneIds.map(id=>scenes.find(s=>s.id===id)).filter(s=>s&&(s.characters||[]).includes(ch.id));
       if(charScenes.length===0)return;
       charScenes.forEach(s=>{
-        pairs.push({char:ch, scene:s, storyPrev:storyPrevFor(ch.id,s.id)});
+        pairs.push({char:ch, scene:s, related:relatedScenesFor(ch.id,s)});
       });
     });
     return pairs;
@@ -3246,13 +3304,13 @@ function ContCards(){
                   <MakeupSection charId={selChar} projId={proj._id} readOnly={true}/>
                 </div>
                 {cards.length===0&&<div style={{color:T.textDim,fontSize:12}}>This character has no scenes in the schedule.</div>}
-                {cards.map(({scene,storyPrev},i)=>{
+                {cards.map(({scene,related},i)=>{
                   const dayNum=scene.shootDay;
                   const showDayHdr=i===0||(cards[i-1]?.scene?.shootDay!==dayNum);
                   return(
                     <div key={scene.id}>
                       {showDayHdr&&dayNum&&<div style={{fontFamily:"'Geist Mono',monospace",fontSize:10,color:T.accent,letterSpacing:'0.12em',margin:'14px 0 6px',paddingLeft:2}}>{'--- DAY '+dayNum+' ---'}</div>}
-                      <ContSceneCard projId={proj._id} scene={scene} char={char} storyPrev={storyPrev} initialExpanded={i===0}/>
+                      <ContSceneCard projId={proj._id} scene={scene} char={char} related={related} initialExpanded={i===0}/>
                     </div>
                   );
                 })}
@@ -3278,8 +3336,8 @@ function ContCards(){
                       <span style={{fontSize:12,color:T.text,fontWeight:500}}>{char.name}</span>
                       <span style={{fontSize:10,color:T.textDim,fontFamily:"'Geist Mono',monospace"}}>{cps.length} scene{cps.length>1?'s':''}</span>
                     </div>
-                    {cps.map(({scene,storyPrev})=>(
-                      <ContSceneCard key={scene.id} projId={proj._id} scene={scene} char={char} storyPrev={storyPrev}/>
+                    {cps.map(({scene,related})=>(
+                      <ContSceneCard key={scene.id} projId={proj._id} scene={scene} char={char} related={related}/>
                     ))}
                   </div>
                 ))}
