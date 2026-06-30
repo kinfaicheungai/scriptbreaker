@@ -3683,7 +3683,21 @@ const NOTE_DEPTS = [
 ═══════════════════════════════════════════════════════════ */
 function LensFocalPicker({value,onChange,options,placeholder,inputStyle,align}){
   const [open,setOpen]=React.useState(false);
+  const [dropUp,setDropUp]=React.useState(false);
   const wrapRef=React.useRef(null);
+
+  // Decide whether the list should pop UP instead of down, based on
+  // how much room is actually left below the field on screen (fixes
+  // last-row dropdowns being cut off / invisible below the fold).
+  function computeDirection(){
+    if(!wrapRef.current)return;
+    const rect=wrapRef.current.getBoundingClientRect();
+    const spaceBelow=window.innerHeight-rect.bottom;
+    const spaceAbove=rect.top;
+    setDropUp(spaceBelow<240&&spaceAbove>spaceBelow);
+  }
+  function openPicker(){ computeDirection(); setOpen(true); }
+
   React.useEffect(()=>{
     if(!open)return;
     function onDoc(e){ if(wrapRef.current&&!wrapRef.current.contains(e.target))setOpen(false); }
@@ -3695,16 +3709,17 @@ function LensFocalPicker({value,onChange,options,placeholder,inputStyle,align}){
     <div ref={wrapRef} style={{position:'relative',width:'100%'}}>
       <div style={{display:'flex',alignItems:'center',gap:1}}>
         <input value={value||''} placeholder={placeholder||''} onChange={e=>onChange(e.target.value)}
-          onFocus={()=>setOpen(true)}
+          onFocus={openPicker}
           style={{flex:1,minWidth:0,fontFamily:"'Geist Mono',monospace",
             background:'transparent',border:'none',padding:'4px 2px',fontSize:11,color:T.text,
             ...(inputStyle||{}),flex:1,minWidth:0}}/>
-        <button type="button" onClick={()=>setOpen(o=>!o)} title="Show options"
+        <button type="button" onClick={()=>{ if(open){setOpen(false);}else{openPicker();} }} title="Show options"
           style={{flexShrink:0,background:'transparent',border:'none',color:T.accent,cursor:'pointer',fontSize:11,padding:'0 4px'}}>{'\u25BC'}</button>
       </div>
       {open&&(
-        <div style={{position:'absolute',top:'100%',[align==='right'?'right':'left']:0,zIndex:400,minWidth:150,maxHeight:230,overflowY:'auto',
-          background:T.panel,border:`1px solid ${T.border}`,borderRadius:7,boxShadow:'0 8px 24px rgba(0,0,0,0.5)',marginTop:3}}>
+        <div style={{position:'absolute',[dropUp?'bottom':'top']:'100%',[dropUp?'marginBottom':'marginTop']:3,
+          [align==='right'?'right':'left']:0,zIndex:400,minWidth:150,maxHeight:230,overflowY:'auto',
+          background:T.panel,border:`1px solid ${T.border}`,borderRadius:7,boxShadow:'0 8px 24px rgba(0,0,0,0.5)'}}>
           {options.map(opt=>(
             <button key={opt} type="button" onMouseDown={(e)=>{e.preventDefault();onChange(opt);setOpen(false);}}
               style={{display:'block',width:'100%',textAlign:'left',padding:'8px 11px',
@@ -3730,6 +3745,7 @@ function LensFocalPicker({value,onChange,options,placeholder,inputStyle,align}){
 function TakePhotoCell({projId,take,onAddPhoto,onRemovePhoto}){
   const [photos,setPhotos]=React.useState([]);
   const [open,setOpen]=React.useState(false);
+  const [dropUp,setDropUp]=React.useState(false);
   const [loading,setLoading]=React.useState(false);
   const fileRef=React.useRef(null);
   const camRef=React.useRef(null);
@@ -3749,6 +3765,17 @@ function TakePhotoCell({projId,take,onAddPhoto,onRemovePhoto}){
     document.addEventListener('touchstart',onDoc);
     return ()=>{ document.removeEventListener('mousedown',onDoc); document.removeEventListener('touchstart',onDoc); };
   },[open]);
+
+  // Same "pop up instead of down when there's no room below" logic as LensFocalPicker.
+  function toggleOpen(){
+    if(!open&&wrapRef.current){
+      const rect=wrapRef.current.getBoundingClientRect();
+      const spaceBelow=window.innerHeight-rect.bottom;
+      const spaceAbove=rect.top;
+      setDropUp(spaceBelow<200&&spaceAbove>spaceBelow);
+    }
+    setOpen(o=>!o);
+  }
 
   async function handleFile(file){
     if(!file||!file.type||file.type.indexOf('image/')!==0)return;
@@ -3771,7 +3798,7 @@ function TakePhotoCell({projId,take,onAddPhoto,onRemovePhoto}){
 
   return(
     <div ref={wrapRef} style={{position:'relative',display:'flex',justifyContent:'center'}}>
-      <button type="button" onClick={()=>setOpen(o=>!o)} title="Reference photos"
+      <button type="button" onClick={toggleOpen} title="Reference photos"
         style={{display:'flex',alignItems:'center',gap:3,
           background:idCount?T.accent+'18':'transparent',
           border:`1px solid ${idCount?T.accent+'44':T.border}`,borderRadius:5,
@@ -3780,9 +3807,9 @@ function TakePhotoCell({projId,take,onAddPhoto,onRemovePhoto}){
         {'\uD83D\uDCF7'}{idCount>0?idCount:''}
       </button>
       {open&&(
-        <div style={{position:'absolute',top:'100%',right:0,zIndex:400,width:175,
+        <div style={{position:'absolute',[dropUp?'bottom':'top']:'100%',right:0,zIndex:400,width:175,
           background:T.panel,border:`1px solid ${T.border}`,borderRadius:8,
-          boxShadow:'0 8px 24px rgba(0,0,0,0.5)',padding:8,marginTop:4}}>
+          boxShadow:'0 8px 24px rgba(0,0,0,0.5)',padding:8,[dropUp?'marginBottom':'marginTop']:4}}>
           {photos.length>0&&(
             <div style={{display:'flex',gap:5,flexWrap:'wrap',marginBottom:8}}>
               {photos.map(p=>(
