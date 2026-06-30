@@ -3619,10 +3619,327 @@ const NOTE_DEPTS = [
   {id:'general',   label:'General',   icon:'📋', color:'#a8a29e'},
 ];
 
+function CameraReport(){
+  const {proj}=useProj();
+  const mob=useMobile();
+  const projId=proj._id||'default';
+
+  // Defaults pulled from the user's template (ALEXA MINI LF camera report)
+  const DEFAULTS={camera:'ALEXA MINI LF',codec:'5K 1.7:1',fps:'23.98',shutter:'180',baseEI:'1600',lut:'Rec 709',director:'David Cook',dop:'Robin Tampoe',ac:'Dimitri Belke'};
+  const LENS_OPTIONS=['18mm','21mm','25mm','27mm','32mm','35mm','40mm','50mm','65mm','75mm','100mm','135mm','Zoom 24-290'];
+
+  const [rolls,setRolls]=React.useState([]);     // [{id, roll, mag, date, shootDay, location, camera, codec, fps, shutter, baseEI, lut, lens, takes:[]}]
+  const [activeRoll,setActiveRoll]=React.useState(null);
+  const [syncStatus,setSyncStatus]=React.useState('offline');
+  const unsubRef=React.useRef(null);
+
+  const scenes=proj.scenes||[];
+  const shootDays=(proj.shootDays||[]).slice().sort((a,b)=>a.day-b.day);
+
+  // Firestore realtime sync (same project, separate collection)
+  React.useEffect(()=>{
+    try{
+      const db=getFirestore();
+      const unsub=db.collection('camera_reports').doc(projId).onSnapshot(doc=>{
+        if(doc.exists){
+          const data=doc.data().rolls||[];
+          setRolls(data);
+          setActiveRoll(prev=>prev||(data[0]?.id||null));
+        }else{ setRolls([]); }
+        setSyncStatus('live');
+      },()=>setSyncStatus('offline'));
+      unsubRef.current=unsub;
+      return ()=>{ if(unsubRef.current)unsubRef.current(); };
+    }catch(e){ setSyncStatus('offline'); }
+  },[projId]);
+
+  const saveRolls=async(updated)=>{
+    setSyncStatus('saving');
+    try{
+      const db=getFirestore();
+      await db.collection('camera_reports').doc(projId).set({
+        rolls:updated, updatedAt:firebase.firestore.FieldValue.serverTimestamp()
+      });
+    }catch(e){ setSyncStatus('offline'); }
+  };
+
+  function nextRollNo(){
+    // find highest A0xx and +1
+    let max=0;
+    rolls.forEach(r=>{const m=(r.roll||'').match(/(\d+)/);if(m){const n=parseInt(m[1],10);if(n>max)max=n;}});
+    return 'A'+String(max+1).padStart(3,'0');
+  }
+
+  function addRoll(){
+    const id='roll'+Date.now();
+    const today=new Date().toISOString().slice(0,10);
+    const newRoll={id, roll:nextRollNo(), mag:'', date:today, shootDay:shootDays[0]?.day||'', location:'',
+      camera:DEFAULTS.camera, codec:DEFAULTS.codec, fps:DEFAULTS.fps, shutter:DEFAULTS.shutter,
+      baseEI:DEFAULTS.baseEI, lut:DEFAULTS.lut, lens:LENS_OPTIONS[5], takes:[]};
+    const updated=[newRoll,...rolls];
+    setRolls(updated); setActiveRoll(id); saveRolls(updated);
+  }
+
+  function patchRoll(id,obj){
+    const updated=rolls.map(r=>r.id===id?{...r,...obj}:r);
+    setRolls(updated); saveRolls(updated);
+  }
+
+  function deleteRoll(id){
+    if(!confirm('Delete this entire roll and all its takes?'))return;
+    const updated=rolls.filter(r=>r.id!==id);
+    setRolls(updated);
+    if(activeRoll===id)setActiveRoll(updated[0]?.id||null);
+    saveRolls(updated);
+  }
+
+  const roll=rolls.find(r=>r.id===activeRoll);
+
+  function nextTakeNo(){
+    if(!roll||roll.takes.length===0)return 1;
+    const last=roll.takes[roll.takes.length-1];
+    // if same scene as last, increment take; else restart at 1
+    return (parseInt(last.take,10)||0)+1;
+  }
+
+  function addTake(){
+    if(!roll)return;
+    const last=roll.takes[roll.takes.length-1]||{};
+    const t={id:'tk'+Date.now(),
+      scene:last.scene||(scenes[0]?.id||''), take:nextTakeNo()+'', tail:false, clip:'',
+      lens:roll.lens||'', focal:'', stop:last.stop||'', ei:roll.baseEI||'', intFilters:'', filters:last.filters||'',
+      wb:last.wb||'', focus:'', notes:''};
+    patchRoll(roll.id,{takes:[...roll.takes,t]});
+  }
+
+  function patchTake(takeId,obj){
+    if(!roll)return;
+    patchRoll(roll.id,{takes:roll.takes.map(t=>t.id===takeId?{...t,...obj}:t)});
+  }
+
+  function deleteTake(takeId){
+    if(!roll)return;
+    patchRoll(roll.id,{takes:roll.takes.filter(t=>t.id!==takeId)});
+  }
+
+  // ---- Export to template-style printable HTML ----
+  function exportReport(){
+    if(!roll)return;
+    const sc=(id)=>{const s=scenes.find(x=>x.id===id);return s?s.id:(id||'');};
+    const dayD=shootDays.find(d=>d.day===roll.shootDay);
+    const dateStr=roll.date||(dayD&&dayD.date)||'';
+    const rows=roll.takes.map(t=>`<tr>
+      <td>${sc(t.scene)}</td><td style="text-align:center">${t.take||''}</td>
+      <td style="text-align:center">${t.tail?'\u2705':''}</td><td>${t.clip||''}</td>
+      <td>${t.lens||''}</td><td>${t.focal||''}</td><td>${t.stop||''}</td><td>${t.ei||''}</td>
+      <td>${t.intFilters||''}</td><td>${t.filters||''}</td><td>${t.wb||''}</td><td>${t.focus||''}</td>
+      <td>${(t.notes||'').replace(/</g,'&lt;')}</td></tr>`).join('');
+    const html=`<!doctype html><html><head><meta charset="utf-8"><title>${proj.title||'Camera Report'} ${roll.roll}</title>
+    <style>
+      body{font-family:Arial,Helvetica,sans-serif;margin:18px;color:#111;}
+      .hdr{background:#1a1a1a;color:#fff;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;}
+      .hdr .title{font-size:24px;font-weight:bold;letter-spacing:2px;text-align:center;flex:1;}
+      .hdr .roll{background:#f3b0b0;color:#111;font-weight:bold;font-size:20px;padding:4px 14px;border-radius:3px;}
+      .crew{font-size:10px;line-height:1.5;}
+      .meta{display:flex;flex-wrap:wrap;border:1px solid #000;border-top:none;font-size:11px;}
+      .meta div{padding:4px 8px;border-right:1px solid #ccc;}
+      .meta b{color:#000;}
+      table{width:100%;border-collapse:collapse;margin-top:0;font-size:10px;}
+      th{background:#7a1f1f;color:#fff;padding:4px;text-align:left;font-size:10px;}
+      td{border:1px solid #ccc;padding:3px 4px;}
+      tr:nth-child(even) td{background:#f7f7f7;}
+    </style></head><body>
+    <div class="hdr">
+      <div class="crew">DIRECTOR: ${DEFAULTS.director}<br>DOP: ${DEFAULTS.dop}<br>1ST AC: ${DEFAULTS.ac}</div>
+      <div class="title">${(proj.title||'FRACTURED MIND').toUpperCase()}</div>
+      <div><div class="roll">${roll.roll||''}</div><div style="color:#fff;font-size:10px;margin-top:4px">MAG # ${roll.mag||''}</div></div>
+    </div>
+    <div class="meta">
+      <div><b>DATE:</b> ${dateStr}</div><div><b>SHOOT DAY:</b> ${roll.shootDay||''}</div>
+      <div><b>CODEC:</b> ${roll.codec||''}</div><div><b>CAMERA:</b> ${roll.camera||''}</div><div><b>LUT:</b> ${roll.lut||''}</div>
+      <div><b>FPS:</b> ${roll.fps||''}</div><div><b>SHUTTER:</b> ${roll.shutter||''}</div>
+      <div><b>BASE EI:</b> ${roll.baseEI||''}</div><div><b>LOCATION:</b> ${roll.location||''}</div>
+    </div>
+    <table><thead><tr>
+      <th>SCENE</th><th>TAKE</th><th>T/S</th><th>CLIP</th><th>LENS</th><th>FOCAL</th><th>STOP</th><th>EI</th>
+      <th>INT FILTERS</th><th>FILTERS</th><th>WB</th><th>FOCUS</th><th>NOTES</th>
+    </tr></thead><tbody>${rows}</tbody></table>
+    </body></html>`;
+    const w=window.open('','_blank');
+    if(w){ w.document.write(html); w.document.close(); }
+  }
+
+  function exportCSV(){
+    if(!roll)return;
+    const head=['SCENE','TAKE','T/S','CLIP','LENS','FOCAL','STOP','EI','INT FILTERS','FILTERS','WB','FOCUS','NOTES'];
+    const esc=(v)=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
+    const lines=[head.join(',')];
+    roll.takes.forEach(t=>{
+      lines.push([t.scene,t.take,t.tail?'TAIL':'',t.clip,t.lens,t.focal,t.stop,t.ei,t.intFilters,t.filters,t.wb,t.focus,t.notes].map(esc).join(','));
+    });
+    const blob=new Blob([lines.join('\n')],{type:'text/csv'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url; a.download=`${roll.roll||'roll'}_camera_report.csv`; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // ---- styles ----
+  const metaInput={background:T.surface2,border:'1px solid '+T.border,borderRadius:4,padding:'3px 6px',fontSize:11,color:T.text,fontFamily:"'Geist Mono',monospace",width:'100%'};
+  const metaLabel={fontSize:8,fontFamily:"'Geist Mono',monospace",letterSpacing:'0.08em',color:T.textDim,marginBottom:2,display:'block'};
+  const cellInput={background:'transparent',border:'none',padding:'4px 5px',fontSize:11,color:T.text,width:'100%',fontFamily:"'Geist Mono',monospace"};
+  const th={padding:'5px 5px',background:T.accent2||'#7a1f1f',color:'#fff',fontSize:9,fontFamily:"'Geist Mono',monospace",letterSpacing:'0.05em',textAlign:'left',whiteSpace:'nowrap',position:'sticky',top:0,zIndex:2};
+
+  return(
+    <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden',border:`1px solid ${T.border}`,borderTop:'none',background:T.panel}}>
+      {/* Toolbar */}
+      <div style={{padding:mob?'8px 10px':'10px 16px',borderBottom:`1px solid ${T.rule}`,display:'flex',alignItems:'center',gap:8,flexShrink:0,flexWrap:'wrap'}}>
+        <div style={{display:'flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:99,background:syncStatus==='live'?T.success+'18':T.surface2,border:`1px solid ${syncStatus==='live'?T.success+'44':T.border}`}}>
+          <div style={{width:5,height:5,borderRadius:'50%',background:syncStatus==='live'?T.success:T.textDim}}/>
+          <span style={{fontFamily:"'Geist Mono',monospace",fontSize:8,color:syncStatus==='live'?T.success:T.textDim}}>{syncStatus==='live'?'LIVE':syncStatus==='saving'?'SAVING...':'OFFLINE'}</span>
+        </div>
+        <div style={{flex:1}}/>
+        {roll&&<button onClick={exportCSV} style={{padding:'4px 10px',borderRadius:5,fontSize:10,fontFamily:"'Geist Mono',monospace",background:'transparent',border:`1px solid ${T.border}`,color:T.textMute,cursor:'pointer'}}>CSV</button>}
+        {roll&&<button onClick={exportReport} style={{padding:'4px 10px',borderRadius:5,fontSize:10,fontFamily:"'Geist Mono',monospace",background:T.accent+'18',border:`1px solid ${T.accent}44`,color:T.accent,cursor:'pointer'}}>{'\uD83D\uDDA8'} Print / PDF</button>}
+        <button onClick={addRoll} style={{padding:'4px 12px',borderRadius:5,fontSize:11,fontFamily:"'Geist Mono',monospace",background:T.accent,border:'none',color:'#0e0d0b',fontWeight:600,cursor:'pointer'}}>+ New Roll</button>
+      </div>
+
+      {/* Roll tabs */}
+      {rolls.length>0&&<div style={{display:'flex',gap:5,padding:'8px 16px 0',flexShrink:0,overflowX:'auto'}}>
+        {rolls.map(r=>(
+          <button key={r.id} onClick={()=>setActiveRoll(r.id)} style={{padding:'4px 12px',borderRadius:'6px 6px 0 0',whiteSpace:'nowrap',
+            background:activeRoll===r.id?T.surface2:'transparent',border:`1px solid ${activeRoll===r.id?T.border:'transparent'}`,borderBottom:'none',
+            color:activeRoll===r.id?T.text:T.textDim,fontSize:11,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>
+            {r.roll||'(roll)'} {'\u00B7'} {(r.takes||[]).length}
+          </button>
+        ))}
+      </div>}
+
+      {!roll&&<div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:12,color:T.textDim}}>
+        <div style={{fontSize:13}}>No camera rolls yet.</div>
+        <button onClick={addRoll} style={{padding:'8px 18px',borderRadius:6,background:T.accent,border:'none',color:'#0e0d0b',fontWeight:600,fontSize:12,cursor:'pointer'}}>+ Start a roll</button>
+      </div>}
+
+      {roll&&<div style={{flex:1,overflow:'auto',minHeight:0}}>
+        {/* Roll header / meta */}
+        <div style={{padding:mob?10:16,borderBottom:`1px solid ${T.rule}`}}>
+          <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:12,flexWrap:'wrap'}}>
+            <div>
+              <span style={metaLabel}>ROLL #</span>
+              <input value={roll.roll||''} onChange={e=>patchRoll(roll.id,{roll:e.target.value})} style={{...metaInput,width:80,fontSize:14,color:T.accent,fontWeight:600}}/>
+            </div>
+            <div>
+              <span style={metaLabel}>MAG #</span>
+              <input value={roll.mag||''} onChange={e=>patchRoll(roll.id,{mag:e.target.value})} style={{...metaInput,width:70}}/>
+            </div>
+            <div style={{flex:1}}/>
+            <button onClick={()=>deleteRoll(roll.id)} style={{padding:'4px 10px',borderRadius:5,fontSize:10,fontFamily:"'Geist Mono',monospace",background:'transparent',border:`1px solid ${T.danger}55`,color:T.danger,cursor:'pointer'}}>Delete roll</button>
+          </div>
+
+          <div style={{display:'grid',gridTemplateColumns:mob?'1fr 1fr':'repeat(4,1fr)',gap:8}}>
+            <div>
+              <span style={metaLabel}>SHOOT DAY</span>
+              <select value={roll.shootDay||''} onChange={e=>{
+                const d=parseInt(e.target.value,10);
+                const dd=shootDays.find(x=>x.day===d);
+                patchRoll(roll.id,{shootDay:d, date:(dd&&dd.date)||roll.date});
+              }} style={metaInput}>
+                <option value="">-</option>
+                {shootDays.map(d=><option key={d.day} value={d.day}>Day {d.day}</option>)}
+              </select>
+            </div>
+            <div>
+              <span style={metaLabel}>DATE</span>
+              <input type="date" value={roll.date||''} onChange={e=>patchRoll(roll.id,{date:e.target.value})} style={metaInput}/>
+            </div>
+            <div>
+              <span style={metaLabel}>CAMERA</span>
+              <input value={roll.camera||''} onChange={e=>patchRoll(roll.id,{camera:e.target.value})} style={metaInput}/>
+            </div>
+            <div>
+              <span style={metaLabel}>CODEC</span>
+              <input value={roll.codec||''} onChange={e=>patchRoll(roll.id,{codec:e.target.value})} style={metaInput}/>
+            </div>
+            <div>
+              <span style={metaLabel}>FPS</span>
+              <input value={roll.fps||''} onChange={e=>patchRoll(roll.id,{fps:e.target.value})} style={metaInput}/>
+            </div>
+            <div>
+              <span style={metaLabel}>SHUTTER</span>
+              <input value={roll.shutter||''} onChange={e=>patchRoll(roll.id,{shutter:e.target.value})} style={metaInput}/>
+            </div>
+            <div>
+              <span style={metaLabel}>BASE EI</span>
+              <input value={roll.baseEI||''} onChange={e=>patchRoll(roll.id,{baseEI:e.target.value})} style={metaInput}/>
+            </div>
+            <div>
+              <span style={metaLabel}>LUT</span>
+              <input value={roll.lut||''} onChange={e=>patchRoll(roll.id,{lut:e.target.value})} style={metaInput}/>
+            </div>
+            <div style={{gridColumn:mob?'span 2':'span 2'}}>
+              <span style={metaLabel}>LOCATION</span>
+              <input value={roll.location||''} onChange={e=>patchRoll(roll.id,{location:e.target.value})} style={metaInput}/>
+            </div>
+            <div style={{gridColumn:'span 2'}}>
+              <span style={metaLabel}>DEFAULT LENS (new takes)</span>
+              <input list="lensopts" value={roll.lens||''} onChange={e=>patchRoll(roll.id,{lens:e.target.value})} style={metaInput}/>
+              <datalist id="lensopts">{LENS_OPTIONS.map(l=><option key={l} value={l}/>)}</datalist>
+            </div>
+          </div>
+        </div>
+
+        {/* Take table */}
+        <div style={{overflowX:'auto'}}>
+          <table style={{borderCollapse:'collapse',width:'100%',minWidth:900}}>
+            <thead><tr>
+              <th style={th}>SCENE</th><th style={{...th,width:50}}>TAKE</th><th style={{...th,width:38}}>T/S</th>
+              <th style={{...th,width:60}}>CLIP</th><th style={{...th,width:90}}>LENS</th><th style={{...th,width:55}}>FOCAL</th>
+              <th style={{...th,width:50}}>STOP</th><th style={{...th,width:55}}>EI</th><th style={{...th,width:70}}>INT FILT</th>
+              <th style={{...th,width:70}}>FILTERS</th><th style={{...th,width:55}}>WB</th><th style={{...th,width:70}}>FOCUS</th>
+              <th style={th}>NOTES</th><th style={{...th,width:30}}></th>
+            </tr></thead>
+            <tbody>
+              {roll.takes.map((t,i)=>(
+                <tr key={t.id} style={{borderBottom:`1px solid ${T.rule}`,background:i%2?T.surface2+'55':'transparent'}}>
+                  <td style={{borderRight:`1px solid ${T.rule}`}}>
+                    <select value={t.scene||''} onChange={e=>patchTake(t.id,{scene:e.target.value})} style={{...cellInput,minWidth:120}}>
+                      <option value="">-</option>
+                      {scenes.map(s=><option key={s.id} value={s.id}>{s.id} {s.slug?'\u00B7 '+s.slug.slice(0,22):''}</option>)}
+                    </select>
+                  </td>
+                  <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.take||''} onChange={e=>patchTake(t.id,{take:e.target.value})} style={{...cellInput,textAlign:'center'}} inputMode="numeric"/></td>
+                  <td style={{borderRight:`1px solid ${T.rule}`,textAlign:'center'}}>
+                    <button onClick={()=>patchTake(t.id,{tail:!t.tail})} title="Tail slate" style={{background:'transparent',border:'none',cursor:'pointer',fontSize:14,padding:'2px'}}>{t.tail?'\u2705':'\u2610'}</button>
+                  </td>
+                  <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.clip||''} onChange={e=>patchTake(t.id,{clip:e.target.value})} style={cellInput}/></td>
+                  <td style={{borderRight:`1px solid ${T.rule}`}}><input list="lensopts" value={t.lens||''} onChange={e=>patchTake(t.id,{lens:e.target.value})} style={cellInput}/></td>
+                  <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.focal||''} onChange={e=>patchTake(t.id,{focal:e.target.value})} style={cellInput}/></td>
+                  <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.stop||''} onChange={e=>patchTake(t.id,{stop:e.target.value})} style={cellInput}/></td>
+                  <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.ei||''} onChange={e=>patchTake(t.id,{ei:e.target.value})} style={cellInput}/></td>
+                  <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.intFilters||''} onChange={e=>patchTake(t.id,{intFilters:e.target.value})} style={cellInput}/></td>
+                  <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.filters||''} onChange={e=>patchTake(t.id,{filters:e.target.value})} style={cellInput}/></td>
+                  <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.wb||''} onChange={e=>patchTake(t.id,{wb:e.target.value})} style={cellInput}/></td>
+                  <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.focus||''} onChange={e=>patchTake(t.id,{focus:e.target.value})} style={cellInput}/></td>
+                  <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.notes||''} onChange={e=>patchTake(t.id,{notes:e.target.value})} style={cellInput}/></td>
+                  <td style={{textAlign:'center'}}><button onClick={()=>deleteTake(t.id)} style={{background:'transparent',border:'none',color:T.textDim,cursor:'pointer',fontSize:12}}>x</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div style={{padding:'10px 16px'}}>
+          <button onClick={addTake} style={{padding:'7px 16px',borderRadius:6,border:`1px dashed ${T.accent}66`,background:T.accent+'10',color:T.accent,fontSize:12,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>+ Add take</button>
+        </div>
+      </div>}
+    </div>
+  );
+}
+
 function OnSetNotes(){
   const {proj} = useProj();
   const mob = useMobile();
 
+  const [mainTab, setMainTab] = React.useState('notes'); // 'notes' | 'camera'
   const [notes, setNotes] = React.useState([]);
   const [selDept, setSelDept] = React.useState('all');
   const [selScene, setSelScene] = React.useState('all');
@@ -3696,6 +4013,25 @@ function OnSetNotes(){
 
   return(
     <div style={{height:'100%',display:'flex',flexDirection:'column',overflow:'hidden'}}>
+
+      {/* Main switch: Notes / Camera Report */}
+      <div style={{padding:mob?'6px 10px 0':'8px 20px 0',display:'flex',gap:6,flexShrink:0}}>
+        <button onClick={()=>setMainTab('notes')}
+          style={{padding:'5px 14px',borderRadius:'6px 6px 0 0',border:`1px solid ${mainTab==='notes'?T.border:'transparent'}`,borderBottom:'none',
+            background:mainTab==='notes'?T.panel:'transparent',color:mainTab==='notes'?T.text:T.textDim,
+            fontSize:12,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>
+          {'\uD83D\uDCDD'} Notes
+        </button>
+        <button onClick={()=>setMainTab('camera')}
+          style={{padding:'5px 14px',borderRadius:'6px 6px 0 0',border:`1px solid ${mainTab==='camera'?T.border:'transparent'}`,borderBottom:'none',
+            background:mainTab==='camera'?T.panel:'transparent',color:mainTab==='camera'?T.text:T.textDim,
+            fontSize:12,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>
+          {'\uD83C\uDFA5'} Camera Report
+        </button>
+      </div>
+
+      {mainTab==='camera'&&<CameraReport/>}
+      {mainTab==='notes'&&<>
 
       {/* Header bar */}
       <div style={{padding:mob?'8px 10px':'10px 20px',borderBottom:`1px solid ${T.rule}`,
@@ -3807,6 +4143,7 @@ function OnSetNotes(){
           onClose={()=>{ setShowAdd(false); setEditNote(null); }}
           mob={mob}/>
       )}
+      </>}
     </div>
   );
 }
@@ -3910,6 +4247,7 @@ function NoteModal({note, scenes, onSave, onClose, mob}){
   const [author, setAuthor] = React.useState(note?.author||'');
   const [imageUrl, setImageUrl] = React.useState(note?.imageUrl||'');
   const [imgLoading, setImgLoading] = React.useState(false);
+  const [imgUploading, setImgUploading] = React.useState(false);
   const fileRef = React.useRef(null);
 
   // Speech recognition
@@ -3983,12 +4321,30 @@ function NoteModal({note, scenes, onSave, onClose, mob}){
     const file = e.target.files[0];
     if(!file) return;
     setImgLoading(true);
-    readAndResize(file).then(function(url){ setImageUrl(url); setImgLoading(false); }).catch(function(){ setImgLoading(false); });
+    readAndResize(file, 1400, 1400, 0.82).then(function(dataUrl){
+      setImageUrl(dataUrl);        // instant local preview
+      setImgLoading(false);
+      // On Set Notes live in Firestore (1MB/doc hard limit) -> never store base64.
+      // Upload to Cloudinary and keep only the hosted URL.
+      setImgUploading(true);
+      uploadContPhoto(dataUrl).then(function(res){
+        setImageUrl(res.url);
+        setImgUploading(false);
+      }).catch(function(err){
+        console.warn('Note image cloud upload failed', err);
+        setImgUploading(false);
+      });
+    }).catch(function(){ setImgLoading(false); });
   }
 
   function handleSubmit(){
     if(listening){ try{ recogRef.current?.stop(); }catch(e){} setListening(false); }
     if(!text.trim()) return;
+    // Guard: don't push a large base64 into Firestore (1MB/doc limit).
+    if(imageUrl && imageUrl.indexOf('data:')===0 && imageUrl.length > 900000){
+      alert('The photo is still uploading (or too large to attach). Please wait a moment for the cloud upload to finish, then tap Add Note again.');
+      return;
+    }
     onSave({text:text.trim(),dept,sceneId:sceneId||null,urgent,author:author.trim(),imageUrl});
   }
 
@@ -4154,6 +4510,20 @@ function NoteModal({note, scenes, onSave, onClose, mob}){
                   style={{position:'absolute',top:4,right:4,background:'rgba(0,0,0,0.6)',
                     border:'none',borderRadius:'50%',width:22,height:22,color:'white',
                     fontSize:12,cursor:'pointer',display:'grid',placeItems:'center'}}>x</button>
+                {imgUploading&&(
+                  <div style={{position:'absolute',left:0,right:0,bottom:0,padding:'3px 0',
+                    background:'rgba(0,0,0,0.65)',color:T.accent,fontSize:9,textAlign:'center',
+                    fontFamily:"'Geist Mono',monospace",borderRadius:'0 0 6px 6px'}}>
+                    {'\u2601'} uploading to cloud...
+                  </div>
+                )}
+                {!imgUploading&&imageUrl.indexOf('http')===0&&(
+                  <div style={{position:'absolute',left:0,right:0,bottom:0,padding:'3px 0',
+                    background:'rgba(0,0,0,0.6)',color:T.success,fontSize:9,textAlign:'center',
+                    fontFamily:"'Geist Mono',monospace",borderRadius:'0 0 6px 6px'}}>
+                    {'\u2611'} synced
+                  </div>
+                )}
               </div>
             ):(
               <button onClick={()=>fileRef.current?.click()}
@@ -4175,12 +4545,12 @@ function NoteModal({note, scenes, onSave, onClose, mob}){
               color:T.textMute,fontSize:12,background:'transparent',cursor:'pointer'}}>
             Cancel
           </button>
-          <button onClick={handleSubmit} disabled={!text.trim()}
-            style={{flex:2,padding:'8px',background:text.trim()?T.accent:'transparent',
-              border:`1px solid ${text.trim()?T.accent:T.border}`,borderRadius:6,
-              color:text.trim()?'#0e0d0b':T.textDim,fontSize:12,fontWeight:600,
-              cursor:text.trim()?'pointer':'default',transition:'all 0.15s'}}>
-            {note?'Save changes':'Add Note'}
+          <button onClick={handleSubmit} disabled={!text.trim()||imgUploading}
+            style={{flex:2,padding:'8px',background:(text.trim()&&!imgUploading)?T.accent:'transparent',
+              border:`1px solid ${(text.trim()&&!imgUploading)?T.accent:T.border}`,borderRadius:6,
+              color:(text.trim()&&!imgUploading)?'#0e0d0b':T.textDim,fontSize:12,fontWeight:600,
+              cursor:(text.trim()&&!imgUploading)?'pointer':'default',transition:'all 0.15s'}}>
+            {imgUploading?'Uploading photo...':(note?'Save changes':'Add Note')}
           </button>
         </div>
       </div>
