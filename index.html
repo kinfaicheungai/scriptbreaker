@@ -941,6 +941,21 @@ async function camRepDeletePhoto(projId,imgId){
     tx.onerror=()=>reject(tx.error);
   });
 }
+async function camRepSetCloudUrl(projId,imgId,cloudUrl){
+  const db=await openCamRepDB();
+  const key=projId+'::'+imgId;
+  return new Promise((resolve,reject)=>{
+    const tx=db.transaction(CAMREP_STORE,'readwrite');
+    const store=tx.objectStore(CAMREP_STORE);
+    const req=store.get(key);
+    req.onsuccess=()=>{
+      const rec=req.result;
+      if(rec){ rec.cloudUrl=cloudUrl; store.put(rec); }
+      tx.oncomplete=resolve;
+    };
+    req.onerror=()=>reject(req.error);
+  });
+}
 
 /* Upload a continuity dataUrl to Cloudinary folder cont_refs */
 async function uploadContPhoto(dataUrl){
@@ -952,6 +967,20 @@ async function uploadContPhoto(dataUrl){
   fd.append('folder','cont_refs');
   const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`,{method:'POST',body:fd});
   if(!r.ok) throw new Error('Cont upload failed: '+r.status);
+  const d=await r.json();
+  return {url:d.secure_url,publicId:d.public_id};
+}
+
+/* Upload a camera report take photo to Cloudinary folder camrep_refs */
+async function uploadCamRepPhoto(dataUrl){
+  const res=await fetch(dataUrl);
+  const blob=await res.blob();
+  const fd=new FormData();
+  fd.append('file',blob,'camrep.jpg');
+  fd.append('upload_preset',CLOUDINARY_UPLOAD_PRESET);
+  fd.append('folder','camrep_refs');
+  const r=await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`,{method:'POST',body:fd});
+  if(!r.ok) throw new Error('Camera report upload failed: '+r.status);
   const d=await r.json();
   return {url:d.secure_url,publicId:d.public_id};
 }
@@ -3740,23 +3769,41 @@ function LensFocalPicker({value,onChange,options,placeholder,inputStyle,align}){
    Compact icon button (📷 + count); tapping opens a small
    popover with thumbnails + Shoot/File capture. Photos live in
    IndexedDB (sb_camrep) and never touch Firestore directly —
-   only photoIds[] (a small array) is stored on the take.
+   only photoIds[] + a small cloudMap{imgId:url} (after sync) are
+   stored on the take. Tap ☁ on a thumbnail to push it to
+   Cloudinary so it shows up on OTHER devices too (IndexedDB is
+   local to the device that took the photo).
 ═══════════════════════════════════════════════════════════ */
-function TakePhotoCell({projId,take,onAddPhoto,onRemovePhoto}){
-  const [photos,setPhotos]=React.useState([]);
+function TakePhotoCell({projId,take,onAddPhoto,onRemovePhoto,onSyncPhoto}){
+  const [photos,setPhotos]=React.useState({}); // imgId -> {dataUrl, cloudUrl}
   const [open,setOpen]=React.useState(false);
   const [dropUp,setDropUp]=React.useState(false);
   const [loading,setLoading]=React.useState(false);
+  const [uploading,setUploading]=React.useState({});
   const fileRef=React.useRef(null);
   const camRef=React.useRef(null);
   const wrapRef=React.useRef(null);
-  const idCount=(take.photoIds||[]).length;
+  const ids=take.photoIds||[];
+  const cloudMap=take.cloudMap||{};
+  const idCount=ids.length;
 
   React.useEffect(()=>{
     let alive=true;
-    camRepGetForTake(projId,take.id).then(rows=>{ if(alive)setPhotos(rows); }).catch(()=>{});
+    camRepGetForTake(projId,take.id).then(rows=>{
+      if(!alive)return;
+      const m={};
+      rows.forEach(r=>{ m[r.imgId]={dataUrl:r.dataUrl,cloudUrl:r.cloudUrl||cloudMap[r.imgId]}; });
+      // Photo exists in cloudMap but not in this device's IndexedDB (e.g. taken on
+      // another device and synced) -> show the cloud copy as a fallback.
+      ids.forEach(iid=>{ if(!m[iid]&&cloudMap[iid]) m[iid]={dataUrl:null,cloudUrl:cloudMap[iid]}; });
+      setPhotos(m);
+    }).catch(()=>{
+      if(!alive)return;
+      const m={}; ids.forEach(iid=>{ if(cloudMap[iid]) m[iid]={dataUrl:null,cloudUrl:cloudMap[iid]}; });
+      setPhotos(m);
+    });
     return ()=>{alive=false;};
-  },[projId,take.id,idCount]);
+  },[projId,take.id,idCount,JSON.stringify(cloudMap)]);
 
   React.useEffect(()=>{
     if(!open)return;
@@ -3772,7 +3819,7 @@ function TakePhotoCell({projId,take,onAddPhoto,onRemovePhoto}){
       const rect=wrapRef.current.getBoundingClientRect();
       const spaceBelow=window.innerHeight-rect.bottom;
       const spaceAbove=rect.top;
-      setDropUp(spaceBelow<200&&spaceAbove>spaceBelow);
+      setDropUp(spaceBelow<220&&spaceAbove>spaceBelow);
     }
     setOpen(o=>!o);
   }
@@ -3784,7 +3831,7 @@ function TakePhotoCell({projId,take,onAddPhoto,onRemovePhoto}){
       const dataUrl=await readAndResize(file,700,700,0.7); // small ref thumbnail, kept light
       const imgId='cp'+Date.now()+Math.floor(Math.random()*1000);
       await camRepPutPhoto(projId,{imgId,takeId:take.id,dataUrl});
-      setPhotos(p=>[...p,{imgId,dataUrl}]);
+      setPhotos(p=>({...p,[imgId]:{dataUrl}}));
       onAddPhoto(imgId);
     }catch(e){ console.warn('camera report photo error',e); }
     setLoading(false);
@@ -3792,8 +3839,21 @@ function TakePhotoCell({projId,take,onAddPhoto,onRemovePhoto}){
 
   async function removePhoto(imgId){
     await camRepDeletePhoto(projId,imgId);
-    setPhotos(p=>p.filter(x=>x.imgId!==imgId));
+    setPhotos(p=>{ const n={...p}; delete n[imgId]; return n; });
     onRemovePhoto(imgId);
+  }
+
+  async function syncPhoto(imgId){
+    const entry=photos[imgId];
+    if(!entry||!entry.dataUrl||entry.cloudUrl)return;
+    setUploading(u=>({...u,[imgId]:true}));
+    try{
+      const {url}=await uploadCamRepPhoto(entry.dataUrl);
+      await camRepSetCloudUrl(projId,imgId,url);
+      setPhotos(p=>({...p,[imgId]:{...p[imgId],cloudUrl:url}}));
+      onSyncPhoto(imgId,url);
+    }catch(e){ console.warn('camera report cloud sync error',e); }
+    setUploading(u=>({...u,[imgId]:false}));
   }
 
   return(
@@ -3807,19 +3867,35 @@ function TakePhotoCell({projId,take,onAddPhoto,onRemovePhoto}){
         {'\uD83D\uDCF7'}{idCount>0?idCount:''}
       </button>
       {open&&(
-        <div style={{position:'absolute',[dropUp?'bottom':'top']:'100%',right:0,zIndex:400,width:175,
+        <div style={{position:'absolute',[dropUp?'bottom':'top']:'100%',right:0,zIndex:400,width:185,
           background:T.panel,border:`1px solid ${T.border}`,borderRadius:8,
           boxShadow:'0 8px 24px rgba(0,0,0,0.5)',padding:8,[dropUp?'marginBottom':'marginTop']:4}}>
-          {photos.length>0&&(
+          {idCount>0&&(
             <div style={{display:'flex',gap:5,flexWrap:'wrap',marginBottom:8}}>
-              {photos.map(p=>(
-                <div key={p.imgId} style={{width:50,height:38,borderRadius:4,overflow:'hidden',position:'relative',border:`1px solid ${T.border}`}}>
-                  <img src={p.dataUrl} style={{width:'100%',height:'100%',objectFit:'cover'}}/>
-                  <button onClick={()=>removePhoto(p.imgId)}
-                    style={{position:'absolute',top:1,right:1,width:14,height:14,background:'rgba(0,0,0,0.7)',
-                      borderRadius:3,color:'white',fontSize:9,border:'none',cursor:'pointer',display:'grid',placeItems:'center'}}>x</button>
-                </div>
-              ))}
+              {ids.map(imgId=>{
+                const p=photos[imgId];
+                const showUrl=p&&(p.dataUrl||p.cloudUrl);
+                const synced=p&&p.cloudUrl;
+                return(
+                  <div key={imgId} style={{width:54,height:42,borderRadius:4,overflow:'hidden',position:'relative',border:`1px solid ${T.border}`,background:T.surface2}}>
+                    {showUrl?<img src={showUrl} style={{width:'100%',height:'100%',objectFit:'cover'}}/>:<div style={{width:'100%',height:'100%',display:'grid',placeItems:'center',fontSize:8,color:T.textDim}}>...</div>}
+                    <button onClick={()=>removePhoto(imgId)}
+                      style={{position:'absolute',top:1,right:1,width:14,height:14,background:'rgba(0,0,0,0.7)',
+                        borderRadius:3,color:'white',fontSize:9,border:'none',cursor:'pointer',display:'grid',placeItems:'center'}}>x</button>
+                    <div style={{position:'absolute',bottom:0,left:0,right:0,padding:'1px 0',background:'rgba(0,0,0,0.6)'}}>
+                      {synced?(
+                        <div style={{textAlign:'center',fontSize:7,color:T.success,fontFamily:"'Geist Mono',monospace"}}>{'\u2611'} synced</div>
+                      ):uploading[imgId]?(
+                        <div style={{textAlign:'center',fontSize:7,color:T.accent,fontFamily:"'Geist Mono',monospace"}}>uploading...</div>
+                      ):p&&p.dataUrl?(
+                        <button onClick={()=>syncPhoto(imgId)} title="Sync to cloud (so other devices can see it)"
+                          style={{width:'100%',background:'transparent',border:'none',color:T.accent,fontSize:7,
+                            fontFamily:"'Geist Mono',monospace",cursor:'pointer',padding:0}}>{'\u2601'} SYNC</button>
+                      ):null}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
           <div style={{display:'flex',gap:6}}>
@@ -3981,7 +4057,7 @@ function CameraReport(){
     const t={id:'tk'+Date.now(),
       scene:scene, shot:shot, take:takeNoFor(scene,shot)+'', tail:false, clip:nextClipNumber(),
       lens:roll.lens||'', focal:last.focal||'', stop:last.stop||'', ei:roll.baseEI||'', intFilters:'', filters:last.filters||'',
-      wb:last.wb||'', focus:'', notes:'', photoIds:[]};
+      wb:last.wb||'', focus:'', notes:'', photoIds:[], cloudMap:{}};
     patchRoll(roll.id,{takes:[...roll.takes,t]});
   }
 
@@ -3994,7 +4070,7 @@ function CameraReport(){
     const t={id:'tk'+Date.now(),
       scene:scene, shot:shot, take:'1', tail:false, clip:nextClipNumber(),
       lens:roll.lens||'', focal:last.focal||'', stop:last.stop||'', ei:roll.baseEI||'', intFilters:'', filters:last.filters||'',
-      wb:last.wb||'', focus:'', notes:'', photoIds:[]};
+      wb:last.wb||'', focus:'', notes:'', photoIds:[], cloudMap:{}};
     patchRoll(roll.id,{takes:[...roll.takes,t]});
   }
 
@@ -4046,9 +4122,16 @@ function CameraReport(){
     if(hasAnyPhoto){
       try{
         const pairs=await Promise.all(roll.takes.map(async t=>{
-          if(!(t.photoIds||[]).length)return [t.id,null];
+          const pids=t.photoIds||[];
+          if(!pids.length)return [t.id,null];
+          const cm=t.cloudMap||{};
           const rows=await camRepGetForTake(projId,t.id).catch(()=>[]);
-          return [t.id, rows[0]?rows[0].dataUrl:null];
+          // Prefer this device's local copy; if this take's photo was taken on
+          // another device, fall back to its synced cloud URL (if it was SYNCed).
+          const local=rows.find(r=>r.dataUrl);
+          if(local)return [t.id, local.dataUrl];
+          const firstCloud=pids.map(id=>cm[id]).find(Boolean);
+          return [t.id, firstCloud||null];
         }));
         pairs.forEach(([id,url])=>{ if(url)photoMap[id]=url; });
       }catch(e){ console.warn('print photo gather failed',e); }
@@ -4280,7 +4363,11 @@ function CameraReport(){
                   <td style={{borderRight:`1px solid ${T.rule}`,padding:'4px 2px'}}>
                     <TakePhotoCell projId={projId} take={t}
                       onAddPhoto={imgId=>patchTake(t.id,{photoIds:[...(t.photoIds||[]),imgId]})}
-                      onRemovePhoto={imgId=>patchTake(t.id,{photoIds:(t.photoIds||[]).filter(x=>x!==imgId)})}/>
+                      onRemovePhoto={imgId=>{
+                        const cm={...(t.cloudMap||{})}; delete cm[imgId];
+                        patchTake(t.id,{photoIds:(t.photoIds||[]).filter(x=>x!==imgId),cloudMap:cm});
+                      }}
+                      onSyncPhoto={(imgId,url)=>patchTake(t.id,{cloudMap:{...(t.cloudMap||{}),[imgId]:url}})}/>
                   </td>
                   <td style={{textAlign:'center'}}><button onClick={()=>deleteTake(t.id)} style={{background:'transparent',border:'none',color:T.textDim,cursor:'pointer',fontSize:12}}>x</button></td>
                 </tr>
