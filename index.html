@@ -1003,13 +1003,15 @@ function getAnthropicKey(){
 }
 function clearAnthropicKey(){ localStorage.removeItem(SB_ANTHRO_KEY); }
 
-async function analyseCameraSlate(dataUrl, existingRoll){
+async function analyseCameraSlate(dataUrlOrArray, existingRoll){
   const key=getAnthropicKey();
-  // strip data: header to get pure base64 + mime type
-  const m=dataUrl.match(/^data:(image\/[^;]+);base64,(.+)$/);
-  if(!m) throw new Error('Invalid image format.');
-  const mimeType=m[1];
-  const base64=m[2];
+  // Accept single dataUrl or array of up to 2
+  const dataUrls=Array.isArray(dataUrlOrArray)?dataUrlOrArray:[dataUrlOrArray];
+  const imageBlocks=dataUrls.map(function(du){
+    const m=du.match(/^data:(image\/[^;]+);base64,(.+)$/);
+    if(!m)throw new Error('Invalid image format.');
+    return {type:'image',source:{type:'base64',media_type:m[1],data:m[2]}};
+  });
 
   // Build context clue from current roll so Claude can infer defaults / validate
   const rollCtx=existingRoll?[
@@ -1017,12 +1019,19 @@ async function analyseCameraSlate(dataUrl, existingRoll){
     `Default lens: ${existingRoll.lens||''}. Base EI: ${existingRoll.baseEI||''}.`
   ].join(' '):'';
 
+  const multi=dataUrls.length>1;
   const prompt=[
-    'You are analysing a film production photo. It may be any of these sources:',
-    '  • A camera slate / clapperboard (scene, shot, take numbers)',
-    '  • A camera monitor / EVF overlay screenshot (e.g. SmallHD, Teradek, ARRI, RED) showing live camera metadata: FPS, shutter, EI/ISO, WB, roll name, clip number, ND filter, codec, timecode etc.',
-    '  • A handwritten take sheet or label',
-    '  • Any other on-set reference material with camera/take information',
+    multi
+      ? 'You are given TWO production photos. Extract information from BOTH and combine into one JSON — e.g. one photo may be a camera monitor overlay (EI, WB, FPS, clip number etc.) and the other a slate/clapperboard (scene, shot, take). Merge all readable fields.'
+      : 'You are analysing a film production photo. It may be any of these sources:',
+    multi?'':
+      '  • A camera slate / clapperboard (scene, shot, take numbers)',
+    multi?'':
+      '  • A camera monitor / EVF overlay screenshot (e.g. SmallHD, Teradek, ARRI, RED) showing live camera metadata: FPS, shutter, EI/ISO, WB, roll name, clip number, ND filter, codec, timecode etc.',
+    multi?'':
+      '  • A handwritten take sheet or label',
+    multi?'':
+      '  • Any other on-set reference material with camera/take information',
     'Extract ONLY what is clearly visible. Never invent values. For monitor screenshots, read the HUD/overlay text carefully (usually displayed as white or coloured text around the image frame).',
     rollCtx,
     'Return a single JSON object (no markdown, no explanation) with these keys (all strings, all optional — omit any key you cannot read clearly):',
@@ -1045,10 +1054,11 @@ async function analyseCameraSlate(dataUrl, existingRoll){
     '  focus   — focus distance if visible; use cm (e.g. "180")',
     '  codec   — codec/recording format from monitor (e.g. "RAW", "ProRes 4444")',
     '  notes   — any other relevant text (timecode, battery, remarks etc.)',
-    'Example for a monitor screenshot: {"ei":"1600","wb":"4000K","fps":"24.000","shutter":"180.0","clip":"C026","roll":"A001","codec":"RAW"}',
-    'Example for a slate: {"scene":"S05","shot":"A","take":"2","focal":"32mm","stop":"T2.8"}',
+    multi
+      ? 'Example: {"scene":"S05","shot":"A","take":"2","ei":"1600","wb":"4000K","fps":"24.000","clip":"C026"}'
+      : 'Example for monitor: {"ei":"1600","wb":"4000K","fps":"24.000","shutter":"180.0","clip":"C026","codec":"RAW"}',
     'Return ONLY the JSON object.'
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 
   const resp=await fetch('https://api.anthropic.com/v1/messages',{
     method:'POST',
@@ -1062,7 +1072,7 @@ async function analyseCameraSlate(dataUrl, existingRoll){
       model:'claude-sonnet-4-6',
       max_tokens:1024,
       messages:[{role:'user',content:[
-        {type:'image',source:{type:'base64',media_type:mimeType,data:base64}},
+        ...imageBlocks,
         {type:'text',text:prompt}
       ]}]
     })
@@ -1074,7 +1084,6 @@ async function analyseCameraSlate(dataUrl, existingRoll){
   }
   const data=await resp.json();
   const raw=(data.content?.find(b=>b.type==='text')?.text||'').trim();
-  // Strip any accidental markdown fences
   const clean=raw.replace(/^```json?/,'').replace(/```$/,'').trim();
   try{
     const parsed=JSON.parse(clean);
@@ -3820,61 +3829,57 @@ const NOTE_DEPTS = [
 ═══════════════════════════════════════════════════════════ */
 function AIFillModal({roll, projId, scenes, onApply, onClose}){
   const mob=useMobile();
-  const [imgData,setImgData]=React.useState(null);   // {dataUrl, mimeType}
-  const [status,setStatus]=React.useState('idle');   // idle|loading|done|error
-  const [result,setResult]=React.useState(null);     // parsed AI fields
+  // Up to 2 images — each is {dataUrl, label}
+  const [imgList,setImgList]=React.useState([]);
+  const [status,setStatus]=React.useState('idle');
+  const [result,setResult]=React.useState(null);
   const [errMsg,setErrMsg]=React.useState('');
-  const [fields,setFields]=React.useState({});       // editable preview of AI result
+  const [fields,setFields]=React.useState({});
   const [hasKey,setHasKey]=React.useState(!!localStorage.getItem(SB_ANTHRO_KEY));
-  const fileRef=React.useRef(null);
-  const camRef=React.useRef(null);
+  const fileRefs=[React.useRef(null),React.useRef(null)];
+  const camRefs=[React.useRef(null),React.useRef(null)];
 
-  async function handleFile(file){
+  async function handleFile(file, slot){
     if(!file||!file.type.startsWith('image/'))return;
-    const dataUrl=await readAndResize(file,1400,1400,0.92); // keep quality high for OCR
-    setImgData({dataUrl,mimeType:'image/jpeg'});
-    setStatus('idle');
-    setResult(null);
-    setFields({});
-    setErrMsg('');
+    const dataUrl=await readAndResize(file,1400,1400,0.92);
+    setImgList(prev=>{
+      const next=[...prev];
+      next[slot]={dataUrl, label:slot===0?'Photo 1':'Photo 2'};
+      return next;
+    });
+    setStatus('idle'); setResult(null); setFields({}); setErrMsg('');
+  }
+
+  function removeImg(slot){
+    setImgList(prev=>{const next=[...prev];next.splice(slot,1);return next;});
+    setStatus('idle'); setResult(null); setFields({}); setErrMsg('');
   }
 
   async function runAnalysis(){
-    if(!imgData)return;
-    setStatus('loading');
-    setErrMsg('');
+    if(!imgList.length)return;
+    setStatus('loading'); setErrMsg('');
     try{
-      const parsed=await analyseCameraSlate(imgData.dataUrl, roll);
+      const dataUrls=imgList.map(i=>i.dataUrl);
+      const parsed=await analyseCameraSlate(dataUrls.length===1?dataUrls[0]:dataUrls, roll);
       setResult(parsed);
-      // Pre-populate editable fields from AI result
       setFields({
-        scene: parsed.scene||'',
-        shot:  parsed.shot||'/',
-        take:  parsed.take||'1',
-        tail:  parsed.tail==='true'||parsed.tail===true,
-        clip:  parsed.clip||'',
-        lens:  parsed.lens||roll?.lens||'',
-        focal: parsed.focal||'',
-        stop:  parsed.stop||'',
-        ei:    parsed.ei||roll?.baseEI||'',
-        intFilters: parsed.intFilters||'',
-        filters:    parsed.filters||'',
-        wb:    parsed.wb||'',
-        focus: parsed.focus||'',
-        notes: parsed.notes||''
+        scene:parsed.scene||'', shot:parsed.shot||'/', take:parsed.take||'1',
+        tail:parsed.tail==='true'||parsed.tail===true,
+        clip:parsed.clip||'', lens:parsed.lens||roll?.lens||'', focal:parsed.focal||'',
+        stop:parsed.stop||'', ei:parsed.ei||roll?.baseEI||'',
+        intFilters:parsed.intFilters||'', filters:parsed.filters||'',
+        nd:parsed.nd||'', wb:parsed.wb||'', focus:parsed.focus||'',
+        codec:parsed.codec||'', notes:parsed.notes||''
       });
-      setStatus('done');
-      setHasKey(true);
+      setStatus('done'); setHasKey(true);
     }catch(e){
-      setStatus('error');
-      setErrMsg(e.message||'Analysis failed.');
-      // If key was bad/cancelled, reflect that
+      setStatus('error'); setErrMsg(e.message||'Analysis failed.');
       setHasKey(!!localStorage.getItem(SB_ANTHRO_KEY));
     }
   }
 
   function applyTake(){
-    onApply({fields, imgData});
+    onApply({fields, imgData:imgList[0]||null, imgList});
     onClose();
   }
 
@@ -3882,20 +3887,21 @@ function AIFillModal({roll, projId, scenes, onApply, onClose}){
     fontSize:11,color:T.text,fontFamily:"'Geist Mono',monospace",width:'100%'};
   const lbl={fontSize:8,fontFamily:"'Geist Mono',monospace",letterSpacing:'0.08em',
     color:T.textDim,marginBottom:2,display:'block'};
-
   const FIELD_DEFS=[
     {k:'scene',l:'SCENE'},{k:'shot',l:'SHOT'},{k:'take',l:'TAKE'},
     {k:'clip',l:'CLIP'},{k:'lens',l:'LENS'},{k:'focal',l:'FOCAL'},
-    {k:'stop',l:'STOP'},{k:'ei',l:'EI'},{k:'intFilters',l:'INT FILT'},
-    {k:'filters',l:'FILTERS'},{k:'nd',l:'ND'},{k:'wb',l:'WB'},
+    {k:'stop',l:'STOP'},{k:'ei',l:'EI'},{k:'intFilters',l:'FILTER 1'},
+    {k:'filters',l:'FILTER 2'},{k:'nd',l:'ND'},{k:'wb',l:'WB'},
     {k:'focus',l:'FOCUS (cm)'},{k:'codec',l:'CODEC'},{k:'notes',l:'NOTES'}
   ];
+
+  const slotLabel=['📷 Monitor / Slate photo','📷 Second photo (optional — e.g. slate if first was monitor)'];
 
   return(
     <div style={{position:'fixed',inset:0,zIndex:9999,background:'rgba(0,0,0,0.75)',
       display:'flex',alignItems:'center',justifyContent:'center',padding:mob?8:24}}>
       <div style={{background:T.panel,border:`1px solid ${T.border}`,borderRadius:12,
-        width:'100%',maxWidth:640,maxHeight:'92vh',overflow:'auto',
+        width:'100%',maxWidth:660,maxHeight:'92vh',overflow:'auto',
         boxShadow:'0 20px 60px rgba(0,0,0,0.7)',display:'flex',flexDirection:'column'}}>
 
         {/* Header */}
@@ -3905,18 +3911,15 @@ function AIFillModal({roll, projId, scenes, onApply, onClose}){
           <div>
             <div style={{fontSize:14,color:T.text,fontWeight:600}}>AI Fill from Photo</div>
             <div style={{fontSize:10,color:T.textDim,marginTop:1}}>
-              Photo a slate, label or take sheet — Claude will extract the fields
+              Add 1–2 photos (monitor + slate) — Claude extracts fields from both at once
             </div>
           </div>
           <div style={{flex:1}}/>
-          {hasKey&&(
-            <button onClick={()=>{clearAnthropicKey();setHasKey(false);}}
-              title="Forget API key"
-              style={{fontSize:9,color:T.textDim,background:'transparent',border:`1px solid ${T.border}`,
-                borderRadius:4,padding:'3px 7px',cursor:'pointer',fontFamily:"'Geist Mono',monospace"}}>
-              forget key
-            </button>
-          )}
+          {hasKey&&<button onClick={()=>{clearAnthropicKey();setHasKey(false);}}
+            style={{fontSize:9,color:T.textDim,background:'transparent',border:`1px solid ${T.border}`,
+              borderRadius:4,padding:'3px 7px',cursor:'pointer',fontFamily:"'Geist Mono',monospace"}}>
+            forget key
+          </button>}
           <button onClick={onClose}
             style={{background:'transparent',border:'none',color:T.textDim,fontSize:18,cursor:'pointer',padding:'0 4px',lineHeight:1}}>
             {'\u00D7'}
@@ -3925,82 +3928,102 @@ function AIFillModal({roll, projId, scenes, onApply, onClose}){
 
         <div style={{padding:'14px 18px',flex:1,minHeight:0,overflow:'auto'}}>
 
-          {/* Step 1: Image selection */}
+          {/* Step 1: Image slots */}
           <div style={{marginBottom:14}}>
-            <div style={{fontSize:10,fontFamily:"'Geist Mono',monospace",color:T.textDim,letterSpacing:'0.08em',marginBottom:8}}>
-              1 · SELECT / SHOOT PHOTO
+            <div style={{fontSize:10,fontFamily:"'Geist Mono',monospace",color:T.textDim,
+              letterSpacing:'0.08em',marginBottom:10}}>
+              1 · ADD PHOTOS (up to 2 — e.g. monitor screenshot + slate)
             </div>
-            <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-              <button onClick={()=>fileRef.current?.click()}
-                style={{padding:'7px 14px',borderRadius:6,border:`1px dashed ${T.border}`,
-                  background:'transparent',color:T.textMute,fontSize:11,
-                  fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>
-                {'\uD83D\uDDBC'} Choose file / screenshot
-              </button>
-              <button onClick={()=>camRef.current?.click()}
-                style={{padding:'7px 14px',borderRadius:6,border:`1px dashed ${T.accent}66`,
-                  background:T.accent+'10',color:T.accent,fontSize:11,
-                  fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>
-                {'\uD83D\uDCF7'} Take photo now
-              </button>
-              <input ref={fileRef} type="file" accept="image/*" style={{display:'none'}}
-                onChange={e=>{handleFile(e.target.files[0]);e.target.value='';}}/>
-              <input ref={camRef} type="file" accept="image/*" capture="environment" style={{display:'none'}}
-                onChange={e=>{handleFile(e.target.files[0]);e.target.value='';}}/>
+            <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
+              {[0,1].map(slot=>{
+                const img=imgList[slot];
+                const isSecond=slot===1;
+                if(isSecond&&imgList.length===0)return null; // hide slot 2 until slot 1 filled
+                return(
+                  <div key={slot} style={{flex:1,minWidth:mob?'100%':200,
+                    background:T.surface2,border:`1px solid ${img?T.accent+'44':T.border}`,
+                    borderRadius:8,padding:8,display:'flex',flexDirection:'column',gap:6}}>
+                    <div style={{fontSize:9,fontFamily:"'Geist Mono',monospace",color:img?T.accent:T.textDim}}>
+                      {img?'PHOTO '+(slot+1)+' \u2713':slotLabel[slot]}
+                    </div>
+                    {img?(
+                      <div style={{position:'relative',display:'inline-block'}}>
+                        <img src={img.dataUrl} style={{width:'100%',maxHeight:100,
+                          objectFit:'contain',borderRadius:5,border:`1px solid ${T.border}`}}/>
+                        <button onClick={()=>removeImg(slot)}
+                          style={{position:'absolute',top:3,right:3,width:18,height:18,
+                            background:'rgba(0,0,0,0.7)',border:'none',borderRadius:'50%',
+                            color:'white',fontSize:11,cursor:'pointer',display:'grid',placeItems:'center'}}>
+                          {'\u00D7'}
+                        </button>
+                      </div>
+                    ):(
+                      <div style={{display:'flex',gap:6}}>
+                        <button onClick={()=>fileRefs[slot].current?.click()}
+                          style={{flex:1,padding:'6px 0',borderRadius:5,border:`1px dashed ${T.border}`,
+                            background:'transparent',color:T.textMute,fontSize:10,
+                            fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>
+                          {'\uD83D\uDDBC'} File
+                        </button>
+                        <button onClick={()=>camRefs[slot].current?.click()}
+                          style={{flex:1,padding:'6px 0',borderRadius:5,border:`1px dashed ${T.accent}66`,
+                            background:T.accent+'10',color:T.accent,fontSize:10,
+                            fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>
+                          {'\uD83D\uDCF7'} Shoot
+                        </button>
+                      </div>
+                    )}
+                    <input ref={fileRefs[slot]} type="file" accept="image/*" style={{display:'none'}}
+                      onChange={e=>{handleFile(e.target.files[0],slot);e.target.value='';}}/>
+                    <input ref={camRefs[slot]} type="file" accept="image/*" capture="environment" style={{display:'none'}}
+                      onChange={e=>{handleFile(e.target.files[0],slot);e.target.value='';}}/>
+                  </div>
+                );
+              })}
             </div>
           </div>
 
-          {/* Image preview */}
-          {imgData&&(
-            <div style={{marginBottom:14,display:'flex',gap:12,alignItems:'flex-start',flexWrap:'wrap'}}>
-              <img src={imgData.dataUrl} style={{maxHeight:160,maxWidth:mob?'100%':260,
-                borderRadius:7,border:`1px solid ${T.border}`,objectFit:'contain'}}/>
-              <div style={{flex:1,minWidth:140}}>
-                <div style={{fontSize:10,fontFamily:"'Geist Mono',monospace",color:T.textDim,
-                  letterSpacing:'0.08em',marginBottom:8}}>2 · ANALYSE</div>
-                {status==='idle'&&(
+          {/* Step 2: Analyse */}
+          {imgList.length>0&&(
+            <div style={{marginBottom:14}}>
+              <div style={{fontSize:10,fontFamily:"'Geist Mono',monospace",color:T.textDim,
+                letterSpacing:'0.08em',marginBottom:8}}>2 · ANALYSE</div>
+              {status==='idle'&&(
+                <button onClick={runAnalysis}
+                  style={{width:'100%',padding:'10px 0',borderRadius:7,background:T.accent,
+                    border:'none',color:'#0e0d0b',fontSize:12,fontWeight:600,cursor:'pointer',
+                    fontFamily:"'Geist Mono',monospace"}}>
+                  {'\uD83E\uDD16'} Analyse {imgList.length===2?'both photos':'photo'} with Claude
+                </button>
+              )}
+              {status==='loading'&&(
+                <div style={{padding:'10px 0',textAlign:'center',color:T.accent,
+                  fontFamily:"'Geist Mono',monospace",fontSize:11}}>{'\u23F3'} Analysing...</div>
+              )}
+              {status==='error'&&(
+                <div>
+                  <div style={{color:T.danger,fontSize:11,marginBottom:8,lineHeight:1.4}}>{errMsg}</div>
                   <button onClick={runAnalysis}
-                    style={{width:'100%',padding:'10px 0',borderRadius:7,
-                      background:T.accent,border:'none',color:'#0e0d0b',
-                      fontSize:12,fontWeight:600,cursor:'pointer',fontFamily:"'Geist Mono',monospace"}}>
-                    {'\uD83E\uDD16'} Analyse with Claude
-                  </button>
-                )}
-                {status==='loading'&&(
-                  <div style={{padding:'10px 0',textAlign:'center',color:T.accent,
-                    fontFamily:"'Geist Mono',monospace",fontSize:11}}>
-                    {'\u23F3'} Analysing...
-                  </div>
-                )}
-                {status==='error'&&(
-                  <div>
-                    <div style={{color:T.danger,fontSize:11,marginBottom:8,lineHeight:1.4}}>{errMsg}</div>
-                    <button onClick={runAnalysis}
-                      style={{width:'100%',padding:'7px 0',borderRadius:6,
-                        background:'transparent',border:`1px solid ${T.border}`,
-                        color:T.textMute,fontSize:11,cursor:'pointer',fontFamily:"'Geist Mono',monospace"}}>
-                      Retry
-                    </button>
-                  </div>
-                )}
-                {status==='done'&&(
-                  <div style={{color:T.success,fontSize:11,fontFamily:"'Geist Mono',monospace"}}>
-                    {'\u2713'} Fields extracted — review below
-                  </div>
-                )}
-              </div>
+                    style={{width:'100%',padding:'7px 0',borderRadius:6,background:'transparent',
+                      border:`1px solid ${T.border}`,color:T.textMute,fontSize:11,cursor:'pointer',
+                      fontFamily:"'Geist Mono',monospace"}}>Retry</button>
+                </div>
+              )}
+              {status==='done'&&(
+                <div style={{color:T.success,fontSize:11,fontFamily:"'Geist Mono',monospace"}}>
+                  {'\u2713'} Fields extracted from {imgList.length===2?'both photos':'photo'} — review below
+                </div>
+              )}
             </div>
           )}
 
-          {/* Step 3: Review / edit extracted fields */}
+          {/* Step 3: Review / edit */}
           {status==='done'&&(
             <div>
               <div style={{fontSize:10,fontFamily:"'Geist Mono',monospace",color:T.textDim,
                 letterSpacing:'0.08em',marginBottom:8}}>
-                3 · REVIEW &amp; EDIT (change anything before applying)
+                3 · REVIEW &amp; EDIT
               </div>
-
-              {/* Tail slate toggle */}
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
                 <button onClick={()=>setFields(f=>({...f,tail:!f.tail}))}
                   style={{background:'transparent',border:'none',cursor:'pointer',fontSize:16,padding:'0 2px'}}>
@@ -4008,20 +4031,17 @@ function AIFillModal({roll, projId, scenes, onApply, onClose}){
                 </button>
                 <span style={{fontSize:11,color:T.textMute,fontFamily:"'Geist Mono',monospace"}}>TAIL SLATE</span>
               </div>
-
               <div style={{display:'grid',gridTemplateColumns:mob?'1fr 1fr':'repeat(3,1fr)',gap:'6px 8px',marginBottom:14}}>
                 {FIELD_DEFS.map(({k,l})=>(
                   <div key={k}>
-                    <span style={lbl}>{l}</span>
+                    <span style={lbl}>{l}{result&&result[k]?<span style={{color:T.accent}}> \u2713</span>:null}</span>
                     <input value={fields[k]||''} onChange={e=>setFields(f=>({...f,[k]:e.target.value}))} style={inp}/>
                   </div>
                 ))}
               </div>
-
-              {/* Empty-field notice */}
-              {result&&Object.keys(result).length===0&&(
+              {result&&Object.keys(result).filter(k=>result[k]).length===0&&(
                 <div style={{fontSize:11,color:T.warn,marginBottom:10,lineHeight:1.4}}>
-                  No fields detected — the photo may not contain readable slate text. Try a clearer photo, or fill the fields manually.
+                  No fields detected — try a clearer photo or fill manually.
                 </div>
               )}
             </div>
@@ -4051,28 +4071,36 @@ function AIFillModal({roll, projId, scenes, onApply, onClose}){
 
 function LensFocalPicker({value,onChange,options,placeholder,inputStyle,align}){
   const [open,setOpen]=React.useState(false);
-  const [dropUp,setDropUp]=React.useState(false);
+  const [fixPos,setFixPos]=React.useState({top:0,left:0,width:150,up:false});
   const wrapRef=React.useRef(null);
 
-  // Decide whether the list should pop UP instead of down, based on
-  // how much room is actually left below the field on screen (fixes
-  // last-row dropdowns being cut off / invisible below the fold).
-  function computeDirection(){
+  // Use position:fixed + getBoundingClientRect so the dropdown is NEVER
+  // clipped by overflow:auto/hidden on any ancestor (e.g. the table wrapper).
+  function openPicker(){
     if(!wrapRef.current)return;
-    const rect=wrapRef.current.getBoundingClientRect();
-    const spaceBelow=window.innerHeight-rect.bottom;
-    const spaceAbove=rect.top;
-    setDropUp(spaceBelow<240&&spaceAbove>spaceBelow);
+    const r=wrapRef.current.getBoundingClientRect();
+    const spaceBelow=window.innerHeight-r.bottom;
+    const up=spaceBelow<240&&r.top>spaceBelow;
+    setFixPos({
+      top: up ? undefined : r.bottom+2,
+      bottom: up ? (window.innerHeight-r.top+2) : undefined,
+      left: r.left,
+      width: Math.max(r.width,150)
+    });
+    setOpen(true);
   }
-  function openPicker(){ computeDirection(); setOpen(true); }
 
   React.useEffect(()=>{
     if(!open)return;
-    function onDoc(e){ if(wrapRef.current&&!wrapRef.current.contains(e.target))setOpen(false); }
+    function onDoc(e){
+      // Close if click is outside the wrapper (the dropdown itself is fixed, outside wrapper)
+      if(wrapRef.current&&!wrapRef.current.contains(e.target)) setOpen(false);
+    }
     document.addEventListener('mousedown',onDoc);
     document.addEventListener('touchstart',onDoc);
     return ()=>{ document.removeEventListener('mousedown',onDoc); document.removeEventListener('touchstart',onDoc); };
   },[open]);
+
   return(
     <div ref={wrapRef} style={{position:'relative',width:'100%'}}>
       <div style={{display:'flex',alignItems:'center',gap:1}}>
@@ -4085,14 +4113,21 @@ function LensFocalPicker({value,onChange,options,placeholder,inputStyle,align}){
           style={{flexShrink:0,background:'transparent',border:'none',color:T.accent,cursor:'pointer',fontSize:11,padding:'0 4px'}}>{'\u25BC'}</button>
       </div>
       {open&&(
-        <div style={{position:'absolute',[dropUp?'bottom':'top']:'100%',[dropUp?'marginBottom':'marginTop']:3,
-          [align==='right'?'right':'left']:0,zIndex:400,minWidth:150,maxHeight:230,overflowY:'auto',
-          background:T.panel,border:`1px solid ${T.border}`,borderRadius:7,boxShadow:'0 8px 24px rgba(0,0,0,0.5)'}}>
+        <div style={{
+          position:'fixed',
+          top: fixPos.top,
+          bottom: fixPos.bottom,
+          left: fixPos.left,
+          width: fixPos.width,
+          zIndex:9500,
+          maxHeight:230,overflowY:'auto',
+          background:T.panel,border:`1px solid ${T.border}`,borderRadius:7,
+          boxShadow:'0 8px 24px rgba(0,0,0,0.5)'}}>
           {options.map(opt=>(
             <button key={opt} type="button" onMouseDown={(e)=>{e.preventDefault();onChange(opt);setOpen(false);}}
-              style={{display:'block',width:'100%',textAlign:'left',padding:'8px 11px',
+              style={{display:'block',width:'100%',textAlign:'left',padding:'10px 13px',
                 background:value===opt?T.chip:'transparent',border:'none',
-                borderBottom:`1px solid ${T.rule}`,color:T.text,fontSize:12,
+                borderBottom:`1px solid ${T.rule}`,color:T.text,fontSize:13,
                 fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>
               {opt}
             </button>
@@ -4116,9 +4151,10 @@ function LensFocalPicker({value,onChange,options,placeholder,inputStyle,align}){
 function TakePhotoCell({projId,take,onAddPhoto,onRemovePhoto,onSyncPhoto}){
   const [photos,setPhotos]=React.useState({}); // imgId -> {dataUrl, cloudUrl}
   const [open,setOpen]=React.useState(false);
-  const [dropUp,setDropUp]=React.useState(false);
+  const [fixPos,setFixPos]=React.useState({top:0,right:0});
   const [loading,setLoading]=React.useState(false);
   const [uploading,setUploading]=React.useState({});
+  const [lightboxUrl,setLightboxUrl]=React.useState(null);
   const fileRef=React.useRef(null);
   const camRef=React.useRef(null);
   const wrapRef=React.useRef(null);
@@ -4132,8 +4168,6 @@ function TakePhotoCell({projId,take,onAddPhoto,onRemovePhoto,onSyncPhoto}){
       if(!alive)return;
       const m={};
       rows.forEach(r=>{ m[r.imgId]={dataUrl:r.dataUrl,cloudUrl:r.cloudUrl||cloudMap[r.imgId]}; });
-      // Photo exists in cloudMap but not in this device's IndexedDB (e.g. taken on
-      // another device and synced) -> show the cloud copy as a fallback.
       ids.forEach(iid=>{ if(!m[iid]&&cloudMap[iid]) m[iid]={dataUrl:null,cloudUrl:cloudMap[iid]}; });
       setPhotos(m);
     }).catch(()=>{
@@ -4152,13 +4186,17 @@ function TakePhotoCell({projId,take,onAddPhoto,onRemovePhoto,onSyncPhoto}){
     return ()=>{ document.removeEventListener('mousedown',onDoc); document.removeEventListener('touchstart',onDoc); };
   },[open]);
 
-  // Same "pop up instead of down when there's no room below" logic as LensFocalPicker.
+  // Use position:fixed + getBoundingClientRect to escape overflow:auto clipping.
   function toggleOpen(){
     if(!open&&wrapRef.current){
-      const rect=wrapRef.current.getBoundingClientRect();
-      const spaceBelow=window.innerHeight-rect.bottom;
-      const spaceAbove=rect.top;
-      setDropUp(spaceBelow<220&&spaceAbove>spaceBelow);
+      const r=wrapRef.current.getBoundingClientRect();
+      const spaceBelow=window.innerHeight-r.bottom;
+      const up=spaceBelow<220&&r.top>spaceBelow;
+      setFixPos({
+        top: up ? undefined : r.bottom+4,
+        bottom: up ? (window.innerHeight-r.top+4) : undefined,
+        right: window.innerWidth-r.right
+      });
     }
     setOpen(o=>!o);
   }
@@ -4206,28 +4244,33 @@ function TakePhotoCell({projId,take,onAddPhoto,onRemovePhoto,onSyncPhoto}){
         {'\uD83D\uDCF7'}{idCount>0?idCount:''}
       </button>
       {open&&(
-        <div style={{position:'absolute',[dropUp?'bottom':'top']:'100%',right:0,zIndex:400,width:185,
+        <div style={{position:'fixed',
+          top:fixPos.top, bottom:fixPos.bottom, right:fixPos.right,
+          zIndex:9500,width:270,
           background:T.panel,border:`1px solid ${T.border}`,borderRadius:8,
           boxShadow:'0 8px 24px rgba(0,0,0,0.5)',padding:8,[dropUp?'marginBottom':'marginTop']:4}}>
           {idCount>0&&(
-            <div style={{display:'flex',gap:5,flexWrap:'wrap',marginBottom:8}}>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:8}}>
               {ids.map(imgId=>{
                 const p=photos[imgId];
                 const showUrl=p&&(p.dataUrl||p.cloudUrl);
                 const synced=p&&p.cloudUrl;
                 return(
-                  <div key={imgId} style={{width:54,height:42,borderRadius:4,overflow:'hidden',position:'relative',border:`1px solid ${T.border}`,background:T.surface2}}>
-                    {showUrl?<img src={showUrl} style={{width:'100%',height:'100%',objectFit:'cover'}}/>:<div style={{width:'100%',height:'100%',display:'grid',placeItems:'center',fontSize:8,color:T.textDim}}>...</div>}
+                  <div key={imgId} style={{width:88,height:66,borderRadius:5,overflow:'hidden',position:'relative',border:`1px solid ${T.border}`,background:T.surface2}}>
+                    {showUrl
+                      ?<img src={showUrl} onClick={()=>setLightboxUrl(showUrl)}
+                          style={{width:'100%',height:'100%',objectFit:'cover',cursor:'zoom-in'}}/>
+                      :<div style={{width:'100%',height:'100%',display:'grid',placeItems:'center',fontSize:8,color:T.textDim}}>...</div>}
                     <button onClick={()=>removePhoto(imgId)}
-                      style={{position:'absolute',top:1,right:1,width:14,height:14,background:'rgba(0,0,0,0.7)',
-                        borderRadius:3,color:'white',fontSize:9,border:'none',cursor:'pointer',display:'grid',placeItems:'center'}}>x</button>
+                      style={{position:'absolute',top:2,right:2,width:16,height:16,background:'rgba(0,0,0,0.7)',
+                        borderRadius:3,color:'white',fontSize:10,border:'none',cursor:'pointer',display:'grid',placeItems:'center'}}>x</button>
                     <div style={{position:'absolute',bottom:0,left:0,right:0,padding:'1px 0',background:'rgba(0,0,0,0.6)'}}>
                       {synced?(
                         <div style={{textAlign:'center',fontSize:7,color:T.success,fontFamily:"'Geist Mono',monospace"}}>{'\u2611'} synced</div>
                       ):uploading[imgId]?(
                         <div style={{textAlign:'center',fontSize:7,color:T.accent,fontFamily:"'Geist Mono',monospace"}}>uploading...</div>
                       ):p&&p.dataUrl?(
-                        <button onClick={()=>syncPhoto(imgId)} title="Sync to cloud (so other devices can see it)"
+                        <button onClick={()=>syncPhoto(imgId)} title="Sync to cloud so other devices can see it"
                           style={{width:'100%',background:'transparent',border:'none',color:T.accent,fontSize:7,
                             fontFamily:"'Geist Mono',monospace",cursor:'pointer',padding:0}}>{'\u2601'} SYNC</button>
                       ):null}
@@ -4239,10 +4282,10 @@ function TakePhotoCell({projId,take,onAddPhoto,onRemovePhoto,onSyncPhoto}){
           )}
           <div style={{display:'flex',gap:6}}>
             <button type="button" onClick={()=>fileRef.current?.click()} disabled={loading}
-              style={{flex:1,padding:'5px 0',borderRadius:5,border:`1px dashed ${T.border}`,
+              style={{flex:1,padding:'6px 0',borderRadius:5,border:`1px dashed ${T.border}`,
                 background:'transparent',color:T.textMute,fontSize:9,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>FILE</button>
             <button type="button" onClick={()=>camRef.current?.click()} disabled={loading}
-              style={{flex:1,padding:'5px 0',borderRadius:5,border:`1px dashed ${T.accent}66`,
+              style={{flex:1,padding:'6px 0',borderRadius:5,border:`1px dashed ${T.accent}66`,
                 background:T.accent+'10',color:T.accent,fontSize:9,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>
               {loading?'...':'\uD83D\uDCF7 SHOOT'}
             </button>
@@ -4251,6 +4294,17 @@ function TakePhotoCell({projId,take,onAddPhoto,onRemovePhoto,onSyncPhoto}){
             onChange={e=>{handleFile(e.target.files[0]);e.target.value='';}}/>
           <input ref={camRef} type="file" accept="image/*" capture="environment" style={{display:'none'}}
             onChange={e=>{handleFile(e.target.files[0]);e.target.value='';}}/>
+        </div>
+      )}
+      {/* Lightbox — tap thumbnail to see full size */}
+      {lightboxUrl&&(
+        <div onClick={()=>setLightboxUrl(null)}
+          style={{position:'fixed',inset:0,zIndex:9998,background:'rgba(0,0,0,0.88)',
+            display:'flex',alignItems:'center',justifyContent:'center',cursor:'zoom-out',padding:16}}>
+          <img src={lightboxUrl} style={{maxWidth:'100%',maxHeight:'100%',borderRadius:8,
+            objectFit:'contain',boxShadow:'0 0 40px rgba(0,0,0,0.8)'}}/>
+          <div style={{position:'absolute',top:16,right:20,color:'rgba(255,255,255,0.7)',
+            fontSize:24,cursor:'pointer',lineHeight:1}} onClick={()=>setLightboxUrl(null)}>{'\u00D7'}</div>
         </div>
       )}
     </div>
@@ -4397,7 +4451,7 @@ function CameraReport(){
     const shot=last.shot||'/';
     const t={id:'tk'+Date.now(),
       scene:scene, shot:shot, take:takeNoFor(scene,shot)+'', tail:false, clip:nextClipNumber(),
-      lens:roll.lens||'', focal:last.focal||'', stop:last.stop||'', ei:roll.baseEI||'', intFilters:'', filters:last.filters||'',
+      lens:roll.lens||'', focal:last.focal||'', stop:last.stop||'', ei:roll.baseEI||'', intFilters:last.intFilters||'Hollywood BM', filters:last.filters||'',
       wb:last.wb||'', focus:'', notes:'', photoIds:[], cloudMap:{}};
     patchRoll(roll.id,{takes:[...roll.takes,t]});
   }
@@ -4410,7 +4464,7 @@ function CameraReport(){
     const shot=nextShotForScene(scene);
     const t={id:'tk'+Date.now(),
       scene:scene, shot:shot, take:'1', tail:false, clip:nextClipNumber(),
-      lens:roll.lens||'', focal:last.focal||'', stop:last.stop||'', ei:roll.baseEI||'', intFilters:'', filters:last.filters||'',
+      lens:roll.lens||'', focal:last.focal||'', stop:last.stop||'', ei:roll.baseEI||'', intFilters:last.intFilters||'Hollywood BM', filters:last.filters||'',
       wb:last.wb||'', focus:'', notes:'', photoIds:[], cloudMap:{}};
     patchRoll(roll.id,{takes:[...roll.takes,t]});
   }
@@ -4571,7 +4625,7 @@ function CameraReport(){
     </div>
     <table><thead><tr>
       <th>SCENE</th><th>SHOT</th><th>TAKE</th><th>T/S</th><th>CLIP</th><th>LENS</th><th>FOCAL</th><th>STOP</th><th>EI</th>
-      <th>INT FILTERS</th><th>FILTERS</th><th>WB</th><th>FOCUS (cm)</th><th>NOTES</th>${hasAnyPhoto?'<th>PHOTO</th>':''}
+      <th>FILTER 1</th><th>FILTER 2</th><th>WB</th><th>FOCUS (cm)</th><th>NOTES</th>${hasAnyPhoto?'<th>PHOTO</th>':''}
     </tr></thead><tbody>${rows}</tbody></table>
     </div>
     </body></html>`;
@@ -4581,7 +4635,7 @@ function CameraReport(){
 
   function exportCSV(){
     if(!roll)return;
-    const head=['SCENE','SHOT','TAKE','T/S','CLIP','LENS','FOCAL','STOP','EI','INT FILTERS','FILTERS','WB','FOCUS (cm)','NOTES'];
+    const head=['SCENE','SHOT','TAKE','T/S','CLIP','LENS','FOCAL','STOP','EI','FILTER 1','FILTER 2','WB','FOCUS (cm)','NOTES'];
     const fcm=(v)=>{v=(v==null?'':String(v)).trim();if(!v)return '';return /^[\d.]+$/.test(v)?v+'cm':v;};
     const esc=(v)=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
     const lines=[head.join(',')];
@@ -4755,8 +4809,8 @@ function CameraReport(){
             <thead><tr>
               <th style={th}>SCENE</th><th style={{...th,width:38}}>SHOT</th><th style={{...th,width:46}}>TAKE</th><th style={{...th,width:36}}>T/S</th>
               <th style={{...th,width:62}}>CLIP</th><th style={{...th,width:100}}>LENS</th><th style={{...th,width:65}}>FOCAL</th>
-              <th style={{...th,width:46}}>STOP</th><th style={{...th,width:50}}>EI</th><th style={{...th,width:64}}>INT FILT</th>
-              <th style={{...th,width:64}}>FILTERS</th><th style={{...th,width:50}}>WB</th>
+              <th style={{...th,width:46}}>STOP</th><th style={{...th,width:50}}>EI</th><th style={{...th,width:64}}>FILTER 1</th>
+              <th style={{...th,width:64}}>FILTER 2</th><th style={{...th,width:50}}>WB</th>
               <th style={{...th,width:46,whiteSpace:'normal',lineHeight:1.15,verticalAlign:'middle'}}>FOCUS<br/>(cm)</th>
               <th style={th}>NOTES</th><th style={{...th,width:44}}>{'\uD83D\uDCF7'}</th><th style={{...th,width:28}}></th>
             </tr></thead>
