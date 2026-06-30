@@ -986,6 +986,106 @@ async function uploadCamRepPhoto(dataUrl){
 }
 
 /* ═══════════════════════════════════════════════════════════
+   CLAUDE VISION — analyse a camera slate / label / field
+   photo and return structured take data.
+   API key stored in localStorage under 'sb_anthropic_key'.
+   First use prompts once; never sent to any server.
+═══════════════════════════════════════════════════════════ */
+const SB_ANTHRO_KEY='sb_anthropic_key';
+function getAnthropicKey(){
+  let k=(localStorage.getItem(SB_ANTHRO_KEY)||'').trim();
+  if(k) return k;
+  k=(prompt('Enter your Anthropic API key to enable AI photo analysis.\nIt is saved only in this browser (localStorage) and never sent anywhere except api.anthropic.com.\n\nKey (starts with sk-ant-):')||'').trim();
+  if(!k) throw new Error('API key required.');
+  if(!k.startsWith('sk-ant-')) throw new Error('Key should start with sk-ant-');
+  localStorage.setItem(SB_ANTHRO_KEY,k);
+  return k;
+}
+function clearAnthropicKey(){ localStorage.removeItem(SB_ANTHRO_KEY); }
+
+async function analyseCameraSlate(dataUrl, existingRoll){
+  const key=getAnthropicKey();
+  // strip data: header to get pure base64 + mime type
+  const m=dataUrl.match(/^data:(image\/[^;]+);base64,(.+)$/);
+  if(!m) throw new Error('Invalid image format.');
+  const mimeType=m[1];
+  const base64=m[2];
+
+  // Build context clue from current roll so Claude can infer defaults / validate
+  const rollCtx=existingRoll?[
+    `Current roll: ${existingRoll.roll||''}, Camera: ${existingRoll.camera||''}, Codec: ${existingRoll.codec||''}, LUT: ${existingRoll.lut||''}.`,
+    `Default lens: ${existingRoll.lens||''}. Base EI: ${existingRoll.baseEI||''}.`
+  ].join(' '):'';
+
+  const prompt=[
+    'You are analysing a film production photo. It may be any of these sources:',
+    '  • A camera slate / clapperboard (scene, shot, take numbers)',
+    '  • A camera monitor / EVF overlay screenshot (e.g. SmallHD, Teradek, ARRI, RED) showing live camera metadata: FPS, shutter, EI/ISO, WB, roll name, clip number, ND filter, codec, timecode etc.',
+    '  • A handwritten take sheet or label',
+    '  • Any other on-set reference material with camera/take information',
+    'Extract ONLY what is clearly visible. Never invent values. For monitor screenshots, read the HUD/overlay text carefully (usually displayed as white or coloured text around the image frame).',
+    rollCtx,
+    'Return a single JSON object (no markdown, no explanation) with these keys (all strings, all optional — omit any key you cannot read clearly):',
+    '  scene   — scene number/ID (from slate, e.g. "S05", "05", "12A")',
+    '  shot    — shot letter (from slate, e.g. "A", "B"); "/" means no shot letter',
+    '  take    — take number as string (e.g. "1", "3")',
+    '  tail    — "true" if TAIL or TAIL SLATE is visible',
+    '  clip    — clip/card name visible on monitor (e.g. "C026", "A026") or slate',
+    '  roll    — roll/magazine name if visible on monitor (e.g. "A001")',
+    '  lens    — lens brand/series if visible (e.g. "Cooke Panchro i")',
+    '  focal   — focal length if visible (e.g. "32mm")',
+    '  stop    — aperture/T-stop if visible (e.g. "T2.8", "f4")',
+    '  ei      — ISO/EI value from monitor or slate (e.g. "1600")',
+    '  fps     — frame rate from monitor (e.g. "24.000", "25")',
+    '  shutter — shutter angle/speed from monitor (e.g. "180.0", "1/50")',
+    '  nd      — ND filter value from monitor if visible (e.g. "0.6", "ND6")',
+    '  intFilters — internal/in-camera filter if visible',
+    '  filters — external filter(s) if visible (e.g. "ND1.2", "Polariser")',
+    '  wb      — white balance from monitor or slate (e.g. "4000K", "5600K")',
+    '  focus   — focus distance if visible; use cm (e.g. "180")',
+    '  codec   — codec/recording format from monitor (e.g. "RAW", "ProRes 4444")',
+    '  notes   — any other relevant text (timecode, battery, remarks etc.)',
+    'Example for a monitor screenshot: {"ei":"1600","wb":"4000K","fps":"24.000","shutter":"180.0","clip":"C026","roll":"A001","codec":"RAW"}',
+    'Example for a slate: {"scene":"S05","shot":"A","take":"2","focal":"32mm","stop":"T2.8"}',
+    'Return ONLY the JSON object.'
+  ].join('\n');
+
+  const resp=await fetch('https://api.anthropic.com/v1/messages',{
+    method:'POST',
+    headers:{
+      'Content-Type':'application/json',
+      'x-api-key':key,
+      'anthropic-version':'2023-06-01',
+      'anthropic-dangerous-direct-browser-access':'true'
+    },
+    body:JSON.stringify({
+      model:'claude-sonnet-4-6',
+      max_tokens:1024,
+      messages:[{role:'user',content:[
+        {type:'image',source:{type:'base64',media_type:mimeType,data:base64}},
+        {type:'text',text:prompt}
+      ]}]
+    })
+  });
+
+  if(!resp.ok){
+    const e=await resp.json().catch(()=>({}));
+    throw new Error(e?.error?.message||'Anthropic API error '+resp.status);
+  }
+  const data=await resp.json();
+  const raw=(data.content?.find(b=>b.type==='text')?.text||'').trim();
+  // Strip any accidental markdown fences
+  const clean=raw.replace(/^```json?/,'').replace(/```$/,'').trim();
+  try{
+    const parsed=JSON.parse(clean);
+    if(typeof parsed==='object'&&parsed!==null) return parsed;
+    throw new Error('Unexpected response shape.');
+  }catch(e){
+    throw new Error('Could not parse AI response. Raw: '+raw.slice(0,200));
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════
    FILENAME PARSER - same logic as standalone Shot Reference
    Viewer, with configurable rules persisted to localStorage
 ═══════════════════════════════════════════════════════════ */
@@ -3710,6 +3810,245 @@ const NOTE_DEPTS = [
    Defined at top level (not nested) so its identity is stable
    across re-renders when used inside a table .map().
 ═══════════════════════════════════════════════════════════ */
+
+/* ═══════════════════════════════════════════════════════════
+   AIFillModal — take photo / upload screenshot, send to
+   Claude Vision, preview extracted fields, then append as a
+   new take row (with the photo saved as its reference).
+   Uses the user's own Anthropic API key (stored in localStorage).
+   Key is never sent anywhere except api.anthropic.com.
+═══════════════════════════════════════════════════════════ */
+function AIFillModal({roll, projId, scenes, onApply, onClose}){
+  const mob=useMobile();
+  const [imgData,setImgData]=React.useState(null);   // {dataUrl, mimeType}
+  const [status,setStatus]=React.useState('idle');   // idle|loading|done|error
+  const [result,setResult]=React.useState(null);     // parsed AI fields
+  const [errMsg,setErrMsg]=React.useState('');
+  const [fields,setFields]=React.useState({});       // editable preview of AI result
+  const [hasKey,setHasKey]=React.useState(!!localStorage.getItem(SB_ANTHRO_KEY));
+  const fileRef=React.useRef(null);
+  const camRef=React.useRef(null);
+
+  async function handleFile(file){
+    if(!file||!file.type.startsWith('image/'))return;
+    const dataUrl=await readAndResize(file,1400,1400,0.92); // keep quality high for OCR
+    setImgData({dataUrl,mimeType:'image/jpeg'});
+    setStatus('idle');
+    setResult(null);
+    setFields({});
+    setErrMsg('');
+  }
+
+  async function runAnalysis(){
+    if(!imgData)return;
+    setStatus('loading');
+    setErrMsg('');
+    try{
+      const parsed=await analyseCameraSlate(imgData.dataUrl, roll);
+      setResult(parsed);
+      // Pre-populate editable fields from AI result
+      setFields({
+        scene: parsed.scene||'',
+        shot:  parsed.shot||'/',
+        take:  parsed.take||'1',
+        tail:  parsed.tail==='true'||parsed.tail===true,
+        clip:  parsed.clip||'',
+        lens:  parsed.lens||roll?.lens||'',
+        focal: parsed.focal||'',
+        stop:  parsed.stop||'',
+        ei:    parsed.ei||roll?.baseEI||'',
+        intFilters: parsed.intFilters||'',
+        filters:    parsed.filters||'',
+        wb:    parsed.wb||'',
+        focus: parsed.focus||'',
+        notes: parsed.notes||''
+      });
+      setStatus('done');
+      setHasKey(true);
+    }catch(e){
+      setStatus('error');
+      setErrMsg(e.message||'Analysis failed.');
+      // If key was bad/cancelled, reflect that
+      setHasKey(!!localStorage.getItem(SB_ANTHRO_KEY));
+    }
+  }
+
+  function applyTake(){
+    onApply({fields, imgData});
+    onClose();
+  }
+
+  const inp={background:T.surface2,border:'1px solid '+T.border,borderRadius:5,padding:'5px 8px',
+    fontSize:11,color:T.text,fontFamily:"'Geist Mono',monospace",width:'100%'};
+  const lbl={fontSize:8,fontFamily:"'Geist Mono',monospace",letterSpacing:'0.08em',
+    color:T.textDim,marginBottom:2,display:'block'};
+
+  const FIELD_DEFS=[
+    {k:'scene',l:'SCENE'},{k:'shot',l:'SHOT'},{k:'take',l:'TAKE'},
+    {k:'clip',l:'CLIP'},{k:'lens',l:'LENS'},{k:'focal',l:'FOCAL'},
+    {k:'stop',l:'STOP'},{k:'ei',l:'EI'},{k:'intFilters',l:'INT FILT'},
+    {k:'filters',l:'FILTERS'},{k:'nd',l:'ND'},{k:'wb',l:'WB'},
+    {k:'focus',l:'FOCUS (cm)'},{k:'codec',l:'CODEC'},{k:'notes',l:'NOTES'}
+  ];
+
+  return(
+    <div style={{position:'fixed',inset:0,zIndex:9999,background:'rgba(0,0,0,0.75)',
+      display:'flex',alignItems:'center',justifyContent:'center',padding:mob?8:24}}>
+      <div style={{background:T.panel,border:`1px solid ${T.border}`,borderRadius:12,
+        width:'100%',maxWidth:640,maxHeight:'92vh',overflow:'auto',
+        boxShadow:'0 20px 60px rgba(0,0,0,0.7)',display:'flex',flexDirection:'column'}}>
+
+        {/* Header */}
+        <div style={{padding:'14px 18px',borderBottom:`1px solid ${T.rule}`,
+          display:'flex',alignItems:'center',gap:10,flexShrink:0}}>
+          <span style={{fontSize:18}}>{'\uD83E\uDD16'}</span>
+          <div>
+            <div style={{fontSize:14,color:T.text,fontWeight:600}}>AI Fill from Photo</div>
+            <div style={{fontSize:10,color:T.textDim,marginTop:1}}>
+              Photo a slate, label or take sheet — Claude will extract the fields
+            </div>
+          </div>
+          <div style={{flex:1}}/>
+          {hasKey&&(
+            <button onClick={()=>{clearAnthropicKey();setHasKey(false);}}
+              title="Forget API key"
+              style={{fontSize:9,color:T.textDim,background:'transparent',border:`1px solid ${T.border}`,
+                borderRadius:4,padding:'3px 7px',cursor:'pointer',fontFamily:"'Geist Mono',monospace"}}>
+              forget key
+            </button>
+          )}
+          <button onClick={onClose}
+            style={{background:'transparent',border:'none',color:T.textDim,fontSize:18,cursor:'pointer',padding:'0 4px',lineHeight:1}}>
+            {'\u00D7'}
+          </button>
+        </div>
+
+        <div style={{padding:'14px 18px',flex:1,minHeight:0,overflow:'auto'}}>
+
+          {/* Step 1: Image selection */}
+          <div style={{marginBottom:14}}>
+            <div style={{fontSize:10,fontFamily:"'Geist Mono',monospace",color:T.textDim,letterSpacing:'0.08em',marginBottom:8}}>
+              1 · SELECT / SHOOT PHOTO
+            </div>
+            <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+              <button onClick={()=>fileRef.current?.click()}
+                style={{padding:'7px 14px',borderRadius:6,border:`1px dashed ${T.border}`,
+                  background:'transparent',color:T.textMute,fontSize:11,
+                  fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>
+                {'\uD83D\uDDBC'} Choose file / screenshot
+              </button>
+              <button onClick={()=>camRef.current?.click()}
+                style={{padding:'7px 14px',borderRadius:6,border:`1px dashed ${T.accent}66`,
+                  background:T.accent+'10',color:T.accent,fontSize:11,
+                  fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>
+                {'\uD83D\uDCF7'} Take photo now
+              </button>
+              <input ref={fileRef} type="file" accept="image/*" style={{display:'none'}}
+                onChange={e=>{handleFile(e.target.files[0]);e.target.value='';}}/>
+              <input ref={camRef} type="file" accept="image/*" capture="environment" style={{display:'none'}}
+                onChange={e=>{handleFile(e.target.files[0]);e.target.value='';}}/>
+            </div>
+          </div>
+
+          {/* Image preview */}
+          {imgData&&(
+            <div style={{marginBottom:14,display:'flex',gap:12,alignItems:'flex-start',flexWrap:'wrap'}}>
+              <img src={imgData.dataUrl} style={{maxHeight:160,maxWidth:mob?'100%':260,
+                borderRadius:7,border:`1px solid ${T.border}`,objectFit:'contain'}}/>
+              <div style={{flex:1,minWidth:140}}>
+                <div style={{fontSize:10,fontFamily:"'Geist Mono',monospace",color:T.textDim,
+                  letterSpacing:'0.08em',marginBottom:8}}>2 · ANALYSE</div>
+                {status==='idle'&&(
+                  <button onClick={runAnalysis}
+                    style={{width:'100%',padding:'10px 0',borderRadius:7,
+                      background:T.accent,border:'none',color:'#0e0d0b',
+                      fontSize:12,fontWeight:600,cursor:'pointer',fontFamily:"'Geist Mono',monospace"}}>
+                    {'\uD83E\uDD16'} Analyse with Claude
+                  </button>
+                )}
+                {status==='loading'&&(
+                  <div style={{padding:'10px 0',textAlign:'center',color:T.accent,
+                    fontFamily:"'Geist Mono',monospace",fontSize:11}}>
+                    {'\u23F3'} Analysing...
+                  </div>
+                )}
+                {status==='error'&&(
+                  <div>
+                    <div style={{color:T.danger,fontSize:11,marginBottom:8,lineHeight:1.4}}>{errMsg}</div>
+                    <button onClick={runAnalysis}
+                      style={{width:'100%',padding:'7px 0',borderRadius:6,
+                        background:'transparent',border:`1px solid ${T.border}`,
+                        color:T.textMute,fontSize:11,cursor:'pointer',fontFamily:"'Geist Mono',monospace"}}>
+                      Retry
+                    </button>
+                  </div>
+                )}
+                {status==='done'&&(
+                  <div style={{color:T.success,fontSize:11,fontFamily:"'Geist Mono',monospace"}}>
+                    {'\u2713'} Fields extracted — review below
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Step 3: Review / edit extracted fields */}
+          {status==='done'&&(
+            <div>
+              <div style={{fontSize:10,fontFamily:"'Geist Mono',monospace",color:T.textDim,
+                letterSpacing:'0.08em',marginBottom:8}}>
+                3 · REVIEW &amp; EDIT (change anything before applying)
+              </div>
+
+              {/* Tail slate toggle */}
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
+                <button onClick={()=>setFields(f=>({...f,tail:!f.tail}))}
+                  style={{background:'transparent',border:'none',cursor:'pointer',fontSize:16,padding:'0 2px'}}>
+                  {fields.tail?'\u2705':'\u2610'}
+                </button>
+                <span style={{fontSize:11,color:T.textMute,fontFamily:"'Geist Mono',monospace"}}>TAIL SLATE</span>
+              </div>
+
+              <div style={{display:'grid',gridTemplateColumns:mob?'1fr 1fr':'repeat(3,1fr)',gap:'6px 8px',marginBottom:14}}>
+                {FIELD_DEFS.map(({k,l})=>(
+                  <div key={k}>
+                    <span style={lbl}>{l}</span>
+                    <input value={fields[k]||''} onChange={e=>setFields(f=>({...f,[k]:e.target.value}))} style={inp}/>
+                  </div>
+                ))}
+              </div>
+
+              {/* Empty-field notice */}
+              {result&&Object.keys(result).length===0&&(
+                <div style={{fontSize:11,color:T.warn,marginBottom:10,lineHeight:1.4}}>
+                  No fields detected — the photo may not contain readable slate text. Try a clearer photo, or fill the fields manually.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={{padding:'12px 18px',borderTop:`1px solid ${T.rule}`,
+          display:'flex',gap:8,justifyContent:'flex-end',flexShrink:0}}>
+          <button onClick={onClose}
+            style={{padding:'7px 16px',borderRadius:6,border:`1px solid ${T.border}`,
+              background:'transparent',color:T.textMute,fontSize:12,cursor:'pointer'}}>
+            Cancel
+          </button>
+          {status==='done'&&(
+            <button onClick={applyTake}
+              style={{padding:'7px 18px',borderRadius:6,border:'none',
+                background:T.accent,color:'#0e0d0b',fontSize:12,fontWeight:600,cursor:'pointer'}}>
+              {'\u2795'} Add as new take
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function LensFocalPicker({value,onChange,options,placeholder,inputStyle,align}){
   const [open,setOpen]=React.useState(false);
   const [dropUp,setDropUp]=React.useState(false);
@@ -3932,6 +4271,8 @@ function CameraReport(){
   const [activeRoll,setActiveRoll]=React.useState(null);
   const [syncStatus,setSyncStatus]=React.useState('offline');
   const [exporting,setExporting]=React.useState(false);
+  const [showAIFill,setShowAIFill]=React.useState(false);
+  const [filterDay,setFilterDay]=React.useState('all'); // 'all' | day number
   const unsubRef=React.useRef(null);
 
   const scenes=proj.scenes||[];
@@ -4079,6 +4420,50 @@ function CameraReport(){
     patchRoll(roll.id,{takes:roll.takes.map(t=>t.id===takeId?{...t,...obj}:t)});
   }
 
+  // Called by AIFillModal when user confirms.
+  // Creates a new take row from AI-extracted fields and optionally
+  // saves the source image to IndexedDB as the take's reference photo.
+  // If the photo was a monitor screenshot, also updates roll-level fields
+  // (fps, shutter, ei, wb, codec) that are more reliably read from the HUD.
+  async function applyAITake({fields, imgData}){
+    if(!roll)return;
+    const takeId='tk'+Date.now();
+    const sceneVal=fields.scene||(roll.takes[roll.takes.length-1]?.scene)||(scenes[0]?.id||'');
+    const shotVal=fields.shot||'/';
+    const takeVal=fields.take||String(takeNoFor(sceneVal,shotVal));
+    // ND from monitor -> append to intFilters
+    const intFiltVal=[fields.intFilters,fields.nd?'ND '+fields.nd:''].filter(Boolean).join(' ');
+    const newTake={
+      id:takeId,
+      scene:sceneVal, shot:shotVal, take:takeVal,
+      tail:!!fields.tail, clip:fields.clip||nextClipNumber(),
+      lens:fields.lens||roll.lens||'', focal:fields.focal||'',
+      stop:fields.stop||'', ei:fields.ei||roll.baseEI||'',
+      intFilters:intFiltVal, filters:fields.filters||'',
+      wb:fields.wb||'', focus:fields.focus||'',
+      notes:fields.notes||'',
+      photoIds:[], cloudMap:{}
+    };
+    // Save the source image as the take's reference photo (IndexedDB)
+    let finalPhotoIds=[];
+    if(imgData&&imgData.dataUrl){
+      try{
+        const imgId='cp'+Date.now()+Math.floor(Math.random()*999);
+        await camRepPutPhoto(projId,{imgId,takeId,dataUrl:imgData.dataUrl});
+        finalPhotoIds=[imgId];
+      }catch(e){ console.warn('AI take photo save error',e); }
+    }
+    const final={...newTake, photoIds:finalPhotoIds};
+    // Patch roll header with monitor-sourced values if they're clearer than what's there
+    const rollPatch={};
+    if(fields.fps&&!roll.fps)    rollPatch.fps=fields.fps;
+    if(fields.shutter&&!roll.shutter) rollPatch.shutter=fields.shutter;
+    if(fields.codec&&!roll.codec)  rollPatch.codec=fields.codec;
+    const updatedTakes=[...roll.takes,final];
+    patchRoll(roll.id,{takes:updatedTakes,...rollPatch});
+  }
+
+
   // Scene changed manually -> shot back to "/" (new-scene convention), take recomputed.
   function changeTakeScene(takeId,sceneId){
     if(!roll)return;
@@ -4225,21 +4610,60 @@ function CameraReport(){
           <span style={{fontFamily:"'Geist Mono',monospace",fontSize:8,color:syncStatus==='live'?T.success:T.textDim}}>{syncStatus==='live'?'LIVE':syncStatus==='saving'?'SAVING...':'OFFLINE'}</span>
         </div>
         <div style={{flex:1}}/>
+        {roll&&<button onClick={()=>setShowAIFill(true)}
+          style={{padding:'4px 12px',borderRadius:5,fontSize:10,fontFamily:"'Geist Mono',monospace",
+            background:T.accent+'18',border:`1px solid ${T.accent}44`,color:T.accent,
+            cursor:'pointer',display:'flex',alignItems:'center',gap:5}}>
+          {'\uD83E\uDD16'} AI Fill
+        </button>}
         {roll&&<button onClick={exportCSV} style={{padding:'4px 10px',borderRadius:5,fontSize:10,fontFamily:"'Geist Mono',monospace",background:'transparent',border:`1px solid ${T.border}`,color:T.textMute,cursor:'pointer'}}>CSV</button>}
         {roll&&<button disabled={exporting} onClick={async()=>{ setExporting(true); try{ await exportReport(); }finally{ setExporting(false); } }} style={{padding:'4px 10px',borderRadius:5,fontSize:10,fontFamily:"'Geist Mono',monospace",background:T.accent+'18',border:`1px solid ${T.accent}44`,color:T.accent,cursor:exporting?'default':'pointer',opacity:exporting?0.6:1}}>{exporting?'Preparing...':<>{'\uD83D\uDDA8'} Print / PDF</>}</button>}
         <button onClick={addRoll} style={{padding:'4px 12px',borderRadius:5,fontSize:11,fontFamily:"'Geist Mono',monospace",background:T.accent,border:'none',color:'#0e0d0b',fontWeight:600,cursor:'pointer'}}>+ New Roll</button>
       </div>
 
-      {/* Roll tabs */}
-      {rolls.length>0&&<div style={{display:'flex',gap:5,padding:'8px 16px 0',flexShrink:0,overflowX:'auto'}}>
-        {rolls.map(r=>(
-          <button key={r.id} onClick={()=>setActiveRoll(r.id)} style={{padding:'4px 12px',borderRadius:'6px 6px 0 0',whiteSpace:'nowrap',
-            background:activeRoll===r.id?T.surface2:'transparent',border:`1px solid ${activeRoll===r.id?T.border:'transparent'}`,borderBottom:'none',
-            color:activeRoll===r.id?T.text:T.textDim,fontSize:11,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>
-            {r.roll||'(roll)'} {'\u00B7'} {(r.takes||[]).length}
-          </button>
-        ))}
-      </div>}
+      {/* Shoot Day filter — shows all unique shoot days across rolls */}
+      {rolls.length>0&&(()=>{
+        const dayNums=[...new Set(rolls.map(r=>r.shootDay).filter(Boolean))].sort((a,b)=>a-b);
+        if(dayNums.length<2)return null; // only show selector if there are multiple days
+        return(
+          <div style={{padding:'6px 16px 0',display:'flex',gap:6,flexShrink:0,alignItems:'center',flexWrap:'wrap'}}>
+            <span style={{fontSize:9,fontFamily:"'Geist Mono',monospace",color:T.textDim,letterSpacing:'0.08em'}}>DAY</span>
+            {[{label:'ALL',val:'all'},...dayNums.map(d=>({label:'Day '+d,val:d}))].map(({label,val})=>(
+              <button key={val} onClick={()=>{
+                setFilterDay(val);
+                // Auto-select first roll of the chosen day (or first overall)
+                const target=val==='all'?rolls[0]:rolls.find(r=>r.shootDay===val);
+                if(target) setActiveRoll(target.id);
+              }} style={{padding:'3px 10px',borderRadius:4,fontSize:10,fontFamily:"'Geist Mono',monospace",
+                background:filterDay===val?T.accent+'22':T.chip,
+                color:filterDay===val?T.accent:T.textMute,
+                border:`1px solid ${filterDay===val?T.accent+'44':T.border}`,
+                cursor:'pointer'}}>
+              {label}
+            </button>
+            ))}
+          </div>
+        );
+      })()}
+
+      {/* Roll tabs — filtered by selected shoot day */}
+      {rolls.length>0&&(()=>{
+        const visRolls=filterDay==='all'?rolls:rolls.filter(r=>r.shootDay===filterDay);
+        return(
+          <div style={{display:'flex',gap:5,padding:'6px 16px 0',flexShrink:0,overflowX:'auto'}}>
+            {visRolls.length===0
+              ?<span style={{fontSize:11,color:T.textDim,fontFamily:"'Geist Mono',monospace",padding:'4px 0'}}>No rolls for this day yet</span>
+              :visRolls.map(r=>(
+                <button key={r.id} onClick={()=>setActiveRoll(r.id)} style={{padding:'4px 12px',borderRadius:'6px 6px 0 0',whiteSpace:'nowrap',
+                  background:activeRoll===r.id?T.surface2:'transparent',border:`1px solid ${activeRoll===r.id?T.border:'transparent'}`,borderBottom:'none',
+                  color:activeRoll===r.id?T.text:T.textDim,fontSize:11,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>
+                  {r.roll||'(roll)'} {'\u00B7'} D{r.shootDay||'?'} {'\u00B7'} {(r.takes||[]).length}
+                </button>
+              ))
+            }
+          </div>
+        );
+      })()}
 
       {!roll&&<div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:12,color:T.textDim}}>
         <div style={{fontSize:13}}>No camera rolls yet.</div>
@@ -4380,6 +4804,15 @@ function CameraReport(){
           <button onClick={addShot} style={{padding:'7px 16px',borderRadius:6,border:`1px dashed ${T.border}`,background:'transparent',color:T.textMute,fontSize:12,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>+ New shot</button>
         </div>
       </div>}
+
+      {showAIFill&&roll&&(
+        <AIFillModal
+          roll={roll}
+          projId={projId}
+          scenes={scenes}
+          onApply={applyAITake}
+          onClose={()=>setShowAIFill(false)}/>
+      )}
     </div>
   );
 }
