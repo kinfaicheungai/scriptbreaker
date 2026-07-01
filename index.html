@@ -4476,7 +4476,9 @@ function CameraReport(){
   const [exporting,setExporting]=React.useState(false);
   const [showAIFill,setShowAIFill]=React.useState(false);
   const [showNotePresets,setShowNotePresets]=React.useState(false);
-  const [filterDay,setFilterDay]=React.useState('all'); // 'all' | day number
+  const [filterDay,setFilterDay]=React.useState('all');
+  const [showSearch,setShowSearch]=React.useState(false);
+  const [searchQ,setSearchQ]=React.useState({});  // field -> search string
   const unsubRef=React.useRef(null);
 
   const scenes=proj.scenes||[];
@@ -4618,6 +4620,42 @@ function CameraReport(){
       wb:last.wb||'', focus:'', notes:'', photoIds:[], cloudMap:{}};
     patchRoll(roll.id,{takes:[...roll.takes,t]});
   }
+
+  // Cross-roll search ─────────────────────────────────────────
+  const SEARCH_FIELDS=[
+    {k:'scene',l:'SCENE'},{k:'shot',l:'SHOT'},{k:'clip',l:'CLIP'},
+    {k:'lens',l:'LENS'},{k:'focal',l:'FOCAL'},{k:'stop',l:'STOP'},
+    {k:'shutter',l:'SHUTTER'},{k:'ei',l:'EI'},{k:'intFilters',l:'FILTER 1'},
+    {k:'filters',l:'FILTER 2'},{k:'wb',l:'WB'},{k:'focus',l:'FOCUS'},
+    {k:'notes',l:'NOTES'},
+  ];
+  const hasSearch=Object.values(searchQ).some(v=>v&&v.trim());
+  const searchResults=React.useMemo(()=>{
+    if(!hasSearch)return null;
+    const active=Object.entries(searchQ).filter(([,v])=>v&&v.trim());
+    const out=[];
+    rolls.forEach(r=>{
+      (r.takes||[]).forEach(t=>{
+        const match=active.every(([k,v])=>{
+          const cell=String(t[k]||'').toLowerCase();
+          return cell.includes(v.trim().toLowerCase());
+        });
+        if(match) out.push({roll:r,take:t});
+      });
+    });
+    return out;
+  },[searchQ,rolls,hasSearch]);
+
+  function setQ(k,v){setSearchQ(prev=>({...prev,[k]:v}));}
+  function resetSearch(){setSearchQ({});}
+
+  // Edit a take that may belong to any roll (for search results view)
+  function patchTakeGlobal(rollId,takeId,obj){
+    const updated=rolls.map(r=>r.id===rollId
+      ?{...r,takes:r.takes.map(t=>t.id===takeId?{...t,...obj}:t)}:r);
+    setRolls(updated); saveRolls(updated);
+  }
+  // ────────────────────────────────────────────────────────────
 
   function patchTake(takeId,obj){
     if(!roll)return;
@@ -4841,6 +4879,14 @@ function CameraReport(){
           <span style={{fontFamily:"'Geist Mono',monospace",fontSize:8,color:syncStatus==='live'?T.success:T.textDim}}>{syncStatus==='live'?'LIVE':syncStatus==='saving'?'SAVING...':'OFFLINE'}</span>
         </div>
         <div style={{flex:1}}/>
+        <button onClick={()=>setShowSearch(s=>!s)}
+          style={{padding:'4px 12px',borderRadius:5,fontSize:10,fontFamily:"'Geist Mono',monospace",
+            background:showSearch?T.chip:'transparent',
+            border:`1px solid ${hasSearch?T.accent:T.border}`,
+            color:hasSearch?T.accent:T.textMute,cursor:'pointer',
+            display:'flex',alignItems:'center',gap:4}}>
+          {'\uD83D\uDD0D'}{hasSearch?` (${searchResults?.length??0})`:' Search'}
+        </button>
         {roll&&<button onClick={()=>setShowAIFill(true)}
           style={{padding:'4px 12px',borderRadius:5,fontSize:10,fontFamily:"'Geist Mono',monospace",
             background:T.accent+'18',border:`1px solid ${T.accent}44`,color:T.accent,
@@ -4901,12 +4947,106 @@ function CameraReport(){
         );
       })()}
 
-      {!roll&&<div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:12,color:T.textDim}}>
+
+      {/* ─── Search panel ─── */}
+      {showSearch&&(
+        <div style={{padding:'10px 14px',borderBottom:`1px solid ${T.rule}`,flexShrink:0,background:T.surface2}}>
+          <div style={{display:'grid',gridTemplateColumns:mob?'repeat(3,1fr)':'repeat(6,1fr)',gap:'6px 8px',marginBottom:8}}>
+            {SEARCH_FIELDS.map(({k,l})=>(
+              <div key={k}>
+                <div style={{fontSize:7,fontFamily:"'Geist Mono',monospace",color:T.textDim,letterSpacing:'0.08em',marginBottom:2}}>{l}</div>
+                <input value={searchQ[k]||''} onChange={e=>setQ(k,e.target.value)}
+                  placeholder="any"
+                  style={{width:'100%',background:T.panel,border:`1px solid ${searchQ[k]?T.accent:T.border}`,
+                    borderRadius:4,padding:'5px 7px',fontSize:11,color:T.text,
+                    fontFamily:"'Geist Mono',monospace"}}/>
+              </div>
+            ))}
+          </div>
+          <div style={{display:'flex',alignItems:'center',gap:10}}>
+            {hasSearch&&<span style={{fontSize:10,fontFamily:"'Geist Mono',monospace",color:T.accent}}>
+              {searchResults?.length??0} take{(searchResults?.length??0)!==1?'s':''} matched across {rolls.length} roll{rolls.length!==1?'s':''}
+            </span>}
+            {hasSearch&&<button onClick={resetSearch}
+              style={{padding:'4px 12px',borderRadius:5,border:`1px solid ${T.border}`,
+                background:'transparent',color:T.textDim,fontSize:10,
+                fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>
+              Reset
+            </button>}
+            {!hasSearch&&<span style={{fontSize:10,color:T.textDim,fontFamily:"'Geist Mono',monospace"}}>Fill any field above to filter across all rolls</span>}
+          </div>
+        </div>
+      )}
+
+      {/* ─── Search results table (cross-roll) ─── */}
+      {showSearch&&hasSearch&&(
+        <div style={{flex:1,overflow:'auto',minHeight:0}}>
+          {(searchResults||[]).length===0
+            ?<div style={{padding:24,textAlign:'center',color:T.textDim,fontFamily:"'Geist Mono',monospace",fontSize:12}}>No takes match</div>
+            :<table style={{borderCollapse:'collapse',width:'100%',minWidth:900}}>
+              <thead><tr>
+                <th style={{...th,width:80,position:'sticky',top:0,left:0,zIndex:3}}>ROLL·DAY</th>
+                <th style={{...th,minWidth:90}}>SCENE</th>
+                <th style={{...th,width:36}}>SHOT</th><th style={{...th,width:42}}>TAKE</th><th style={{...th,width:34}}>T/S</th>
+                <th style={{...th,width:62}}>CLIP</th><th style={{...th,width:60}}>EI</th>
+                <th style={{...th,width:60}}>FOCAL</th><th style={{...th,width:50}}>STOP</th>
+                <th style={{...th,width:55}}>SHUTTER</th><th style={{...th,width:55}}>WB</th>
+                <th style={{...th,width:64}}>FILTER 1</th><th style={{...th,width:64}}>FILTER 2</th>
+                <th style={th}>NOTES</th>
+              </tr></thead>
+              <tbody>
+                {(searchResults||[]).map(({roll:r,take:t},i)=>{
+                  // Highlight cells that matched the active search query
+                  function hl(k){
+                    const q=(searchQ[k]||'').trim();
+                    const val=String(t[k]||'');
+                    if(!q||!val.toLowerCase().includes(q.toLowerCase()))return {color:T.text};
+                    return {color:T.accent,fontWeight:600};
+                  }
+                  return(
+                    <tr key={r.id+'::'+t.id} style={{borderBottom:`1px solid ${T.rule}`,background:i%2?T.surface2+'55':'transparent'}}>
+                      <td style={{borderRight:`1px solid ${T.rule}`,position:'sticky',left:0,background:i%2?T.surface2+'dd':T.panel+'dd',zIndex:1}}>
+                        <div style={{fontFamily:"'Geist Mono',monospace",fontSize:10,color:T.accent,padding:'4px 6px',lineHeight:1.4}}>
+                          {r.roll||'?'}<br/>
+                          <span style={{color:T.textDim,fontSize:9}}>D{r.shootDay||'?'}</span>
+                        </div>
+                      </td>
+                      <td style={{borderRight:`1px solid ${T.rule}`,padding:'4px 6px',fontSize:11,fontFamily:"'Geist Mono',monospace",...hl('scene')}}>{t.scene||''}</td>
+                      <td style={{borderRight:`1px solid ${T.rule}`,padding:'4px 6px',fontSize:11,textAlign:'center',fontFamily:"'Geist Mono',monospace",...hl('shot')}}>{t.shot||''}</td>
+                      <td style={{borderRight:`1px solid ${T.rule}`,padding:'4px 6px',fontSize:11,textAlign:'center',fontFamily:"'Geist Mono',monospace"}}>{t.take||''}</td>
+                      <td style={{borderRight:`1px solid ${T.rule}`,padding:'4px 6px',fontSize:12,textAlign:'center'}}>{t.tail?'\u2705':''}</td>
+                      <td style={{borderRight:`1px solid ${T.rule}`,padding:'4px 6px',fontSize:11,fontFamily:"'Geist Mono',monospace",...hl('clip')}}>{t.clip||''}</td>
+                      <td style={{borderRight:`1px solid ${T.rule}`,padding:'4px 6px',fontSize:11,fontFamily:"'Geist Mono',monospace",...hl('ei')}}>{t.ei||''}</td>
+                      <td style={{borderRight:`1px solid ${T.rule}`,padding:'4px 6px',fontSize:11,fontFamily:"'Geist Mono',monospace",...hl('focal')}}>{t.focal||''}</td>
+                      <td style={{borderRight:`1px solid ${T.rule}`,padding:'4px 6px',fontSize:11,fontFamily:"'Geist Mono',monospace",...hl('stop')}}>{t.stop||''}</td>
+                      <td style={{borderRight:`1px solid ${T.rule}`,padding:'4px 6px',fontSize:11,fontFamily:"'Geist Mono',monospace",...hl('shutter')}}>{t.shutter||r.shutter||''}</td>
+                      <td style={{borderRight:`1px solid ${T.rule}`,padding:'4px 6px',fontSize:11,fontFamily:"'Geist Mono',monospace",...hl('wb')}}>{t.wb||''}</td>
+                      <td style={{borderRight:`1px solid ${T.rule}`,padding:'4px 6px',fontSize:11,fontFamily:"'Geist Mono',monospace",...hl('intFilters')}}>{t.intFilters||''}</td>
+                      <td style={{borderRight:`1px solid ${T.rule}`,padding:'4px 6px',fontSize:11,fontFamily:"'Geist Mono',monospace",...hl('filters')}}>{t.filters||''}</td>
+                      <td style={{padding:'4px 6px',fontSize:11,fontFamily:"'Geist Mono',monospace",...hl('notes')}}>
+                        {t.notes||''}
+                        <button onClick={()=>{setActiveRoll(r.id);setShowSearch(false);resetSearch();}}
+                          title="Go to this roll"
+                          style={{marginLeft:6,fontSize:9,color:T.textDim,background:'transparent',border:`1px solid ${T.border}`,
+                            borderRadius:3,padding:'1px 5px',cursor:'pointer',fontFamily:"'Geist Mono',monospace"}}>
+                          go {'\u2192'}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          }
+        </div>
+      )}
+
+      {!roll&&!hasSearch&&<div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:12,color:T.textDim}}>
         <div style={{fontSize:13}}>No camera rolls yet.</div>
         <button onClick={addRoll} style={{padding:'8px 18px',borderRadius:6,background:T.accent,border:'none',color:'#0e0d0b',fontWeight:600,fontSize:12,cursor:'pointer'}}>+ Start a roll</button>
       </div>}
 
-      {roll&&<div style={{flex:1,overflow:'auto',minHeight:0}}>
+      {roll&&!(showSearch&&hasSearch)&&<div style={{flex:1,overflow:'auto',minHeight:0}}>
         {/* Roll header / meta - compact: one dense grid for everything */}
         <div style={{padding:mob?'6px 8px':'7px 12px',borderBottom:`1px solid ${T.rule}`}}>
           <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6,flexWrap:'wrap'}}>
