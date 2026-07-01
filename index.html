@@ -4853,14 +4853,43 @@ function CameraReport(){
 
   async function deleteTake(takeId){
     if(!roll)return;
-    const t=roll.takes.find(x=>x.id===takeId);
+    const delIdx=roll.takes.findIndex(x=>x.id===takeId);
+    const t=roll.takes[delIdx];
     const label=t?`${t.scene||'?'}${t.shot?'/'+t.shot:''} / Take ${t.take||'?'}`:'this take';
     if(!confirm('Delete '+label+'?'))return;
-    // Clean up any IndexedDB photos attached to this take so they don't orphan.
     if(t&&t.photoIds&&t.photoIds.length){
       try{ await Promise.all(t.photoIds.map(imgId=>camRepDeletePhoto(projId,imgId))); }catch(e){}
     }
-    patchRoll(roll.id,{takes:roll.takes.filter(t=>t.id!==takeId)});
+    // Renumber clips after the deleted row (-1) if they match the deleted take's pattern
+    const delParsed=parseClip(t?.clip||'');
+    const remaining=roll.takes.filter(x=>x.id!==takeId).map(take=>{
+      const origIdx=roll.takes.findIndex(x=>x.id===take.id);
+      if(!delParsed||origIdx<=delIdx)return take;
+      const p=parseClip(take.clip||'');
+      if(!p||p.pre!==delParsed.pre||p.suf!==delParsed.suf||p.digits!==delParsed.digits)return take;
+      if(p.num>delParsed.num) return {...take,clip:fmtClip(p,p.num-1)};
+      return take;
+    });
+    patchRoll(roll.id,{takes:remaining});
+  }
+
+  // Resequence all clips in the current roll: starting from the first
+  // parseable clip, fill every take with a contiguous number sequence.
+  // Useful after manual edits leave gaps.
+  function resequenceClips(){
+    if(!roll||roll.takes.length===0)return;
+    let parsed=null; let startIdx=0;
+    for(let i=0;i<roll.takes.length;i++){
+      const p=parseClip(roll.takes[i].clip||'');
+      if(p){parsed=p;startIdx=i;break;}
+    }
+    if(!parsed){alert('No numbered clip found to base the sequence on.');return;}
+    if(!confirm(`Resequence all clips from "${fmtClip(parsed,parsed.num)}" onwards?\nAll clips from take ${startIdx+1} will be renumbered in order.`))return;
+    const updated=roll.takes.map((t,i)=>{
+      if(i<startIdx)return t;
+      return {...t,clip:fmtClip(parsed,parsed.num+(i-startIdx))};
+    });
+    patchRoll(roll.id,{takes:updated});
   }
 
   // ---- Export to template-style printable HTML ----
@@ -5077,7 +5106,7 @@ function CameraReport(){
         </div>
       )}
 
-      {/* ─── Search results table (cross-roll) ─── */}
+      {/* ─── Search results table (cross-roll, editable) ─── */}
       {showSearch&&hasSearch&&(
         <div style={{flex:1,overflow:'auto',minHeight:0}}>
           {(searchResults||[]).length===0
@@ -5095,41 +5124,72 @@ function CameraReport(){
               </tr></thead>
               <tbody>
                 {(searchResults||[]).map(({roll:r,take:t},i)=>{
-                  // Highlight cells that matched the active search query
-                  function hl(k){
+                  // Cells that match the query get accent colour
+                  const hl=k=>{
                     const q=(searchQ[k]||'').trim();
-                    const val=String(t[k]||'');
-                    if(!q||!val.toLowerCase().includes(q.toLowerCase()))return {color:T.text};
-                    return {color:T.accent,fontWeight:600};
-                  }
+                    if(!q)return {};
+                    return String(t[k]||'').toLowerCase().includes(q.toLowerCase())?{color:T.accent,fontWeight:600}:{};
+                  };
+                  // Shared editable cell style
+                  const ci={background:'transparent',border:'none',padding:'5px 5px',
+                    fontSize:11,color:T.text,width:'100%',fontFamily:"'Geist Mono',monospace"};
+                  const patch=(obj)=>patchTakeGlobal(r.id,t.id,obj);
                   return(
                     <tr key={r.id+'::'+t.id} style={{borderBottom:`1px solid ${T.rule}`,background:i%2?T.surface2+'55':'transparent'}}>
+                      {/* Sticky roll·day label */}
                       <td style={{borderRight:`1px solid ${T.rule}`,position:'sticky',left:0,background:i%2?T.surface2+'dd':T.panel+'dd',zIndex:1}}>
                         <div style={{fontFamily:"'Geist Mono',monospace",fontSize:10,color:T.accent,padding:'4px 6px',lineHeight:1.4}}>
                           {r.roll||'?'}<br/>
                           <span style={{color:T.textDim,fontSize:9}}>D{r.shootDay||'?'}</span>
                         </div>
                       </td>
-                      <td style={{borderRight:`1px solid ${T.rule}`,padding:'4px 6px',fontSize:11,fontFamily:"'Geist Mono',monospace",...hl('scene')}}>{t.scene||''}</td>
-                      <td style={{borderRight:`1px solid ${T.rule}`,padding:'4px 6px',fontSize:11,textAlign:'center',fontFamily:"'Geist Mono',monospace",...hl('shot')}}>{t.shot||''}</td>
-                      <td style={{borderRight:`1px solid ${T.rule}`,padding:'4px 6px',fontSize:11,textAlign:'center',fontFamily:"'Geist Mono',monospace"}}>{t.take||''}</td>
-                      <td style={{borderRight:`1px solid ${T.rule}`,padding:'4px 6px',fontSize:12,textAlign:'center'}}>{t.tail?'\u2705':''}</td>
-                      <td style={{borderRight:`1px solid ${T.rule}`,padding:'4px 6px',fontSize:11,fontFamily:"'Geist Mono',monospace",...hl('clip')}}>{t.clip||''}</td>
-                      <td style={{borderRight:`1px solid ${T.rule}`,padding:'4px 6px',fontSize:11,fontFamily:"'Geist Mono',monospace",...hl('ei')}}>{t.ei||''}</td>
-                      <td style={{borderRight:`1px solid ${T.rule}`,padding:'4px 6px',fontSize:11,fontFamily:"'Geist Mono',monospace",...hl('focal')}}>{t.focal||''}</td>
-                      <td style={{borderRight:`1px solid ${T.rule}`,padding:'4px 6px',fontSize:11,fontFamily:"'Geist Mono',monospace",...hl('stop')}}>{t.stop||''}</td>
-                      <td style={{borderRight:`1px solid ${T.rule}`,padding:'4px 6px',fontSize:11,fontFamily:"'Geist Mono',monospace",...hl('shutter')}}>{t.shutter||r.shutter||''}</td>
-                      <td style={{borderRight:`1px solid ${T.rule}`,padding:'4px 6px',fontSize:11,fontFamily:"'Geist Mono',monospace",...hl('wb')}}>{t.wb||''}</td>
-                      <td style={{borderRight:`1px solid ${T.rule}`,padding:'4px 6px',fontSize:11,fontFamily:"'Geist Mono',monospace",...hl('intFilters')}}>{t.intFilters||''}</td>
-                      <td style={{borderRight:`1px solid ${T.rule}`,padding:'4px 6px',fontSize:11,fontFamily:"'Geist Mono',monospace",...hl('filters')}}>{t.filters||''}</td>
-                      <td style={{padding:'4px 6px',fontSize:11,fontFamily:"'Geist Mono',monospace",...hl('notes')}}>
-                        {t.notes||''}
-                        <button onClick={()=>{setActiveRoll(r.id);setShowSearch(false);resetSearch();}}
-                          title="Go to this roll"
-                          style={{marginLeft:6,fontSize:9,color:T.textDim,background:'transparent',border:`1px solid ${T.border}`,
-                            borderRadius:3,padding:'1px 5px',cursor:'pointer',fontFamily:"'Geist Mono',monospace"}}>
-                          go {'\u2192'}
-                        </button>
+                      <td style={{borderRight:`1px solid ${T.rule}`,...hl('scene')}}>
+                        <input value={t.scene||''} onChange={e=>patch({scene:e.target.value})} style={ci}/>
+                      </td>
+                      <td style={{borderRight:`1px solid ${T.rule}`,...hl('shot')}}>
+                        <input value={t.shot||''} onChange={e=>patch({shot:e.target.value.toUpperCase()})} style={{...ci,textAlign:'center'}}/>
+                      </td>
+                      <td style={{borderRight:`1px solid ${T.rule}`}}>
+                        <input value={t.take||''} onChange={e=>patch({take:e.target.value})} style={{...ci,textAlign:'center'}} inputMode="numeric"/>
+                      </td>
+                      <td style={{borderRight:`1px solid ${T.rule}`,textAlign:'center',padding:'4px 2px'}}>
+                        <button onClick={()=>patch({tail:!t.tail})} style={{background:'transparent',border:'none',cursor:'pointer',fontSize:13}}>{t.tail?'\u2705':'\u2610'}</button>
+                      </td>
+                      <td style={{borderRight:`1px solid ${T.rule}`,...hl('clip')}}>
+                        <input value={t.clip||''} onChange={e=>patch({clip:e.target.value})} style={ci}/>
+                      </td>
+                      <td style={{borderRight:`1px solid ${T.rule}`,...hl('ei')}}>
+                        <input value={t.ei||''} onChange={e=>patch({ei:e.target.value})} style={ci}/>
+                      </td>
+                      <td style={{borderRight:`1px solid ${T.rule}`,...hl('focal')}}>
+                        <input value={t.focal||''} onChange={e=>patch({focal:e.target.value})} style={ci}/>
+                      </td>
+                      <td style={{borderRight:`1px solid ${T.rule}`,...hl('stop')}}>
+                        <input value={t.stop||''} onChange={e=>patch({stop:e.target.value})} style={ci}/>
+                      </td>
+                      <td style={{borderRight:`1px solid ${T.rule}`,...hl('shutter')}}>
+                        <input value={t.shutter||''} placeholder={r.shutter||''} onChange={e=>patch({shutter:e.target.value})} style={ci}/>
+                      </td>
+                      <td style={{borderRight:`1px solid ${T.rule}`,...hl('wb')}}>
+                        <input value={t.wb||''} onChange={e=>patch({wb:e.target.value})} style={ci}/>
+                      </td>
+                      <td style={{borderRight:`1px solid ${T.rule}`,...hl('intFilters')}}>
+                        <input value={t.intFilters||''} onChange={e=>patch({intFilters:e.target.value})} style={ci}/>
+                      </td>
+                      <td style={{borderRight:`1px solid ${T.rule}`,...hl('filters')}}>
+                        <input value={t.filters||''} onChange={e=>patch({filters:e.target.value})} style={ci}/>
+                      </td>
+                      <td style={{...hl('notes'),padding:0}}>
+                        <div style={{display:'flex',alignItems:'center'}}>
+                          <input value={t.notes||''} onChange={e=>patch({notes:e.target.value})} style={{...ci,flex:1}}/>
+                          <button onClick={()=>{setActiveRoll(r.id);setShowSearch(false);resetSearch();}}
+                            title="Jump to this roll to see full row"
+                            style={{flexShrink:0,fontSize:9,color:T.textDim,background:'transparent',
+                              border:`1px solid ${T.border}`,borderRadius:3,padding:'2px 6px',
+                              margin:'0 4px',cursor:'pointer',fontFamily:"'Geist Mono',monospace",whiteSpace:'nowrap'}}>
+                            go {'\u2192'}
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -5284,9 +5344,15 @@ function CameraReport(){
             </tbody>
           </table>
         </div>
-        <div style={{padding:'10px 16px',display:'flex',gap:8,flexWrap:'wrap'}}>
+        <div style={{padding:'10px 16px',display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
           <button onClick={addTake} style={{padding:'7px 16px',borderRadius:6,border:`1px dashed ${T.accent}66`,background:T.accent+'10',color:T.accent,fontSize:12,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>+ Add take</button>
           <button onClick={addShot} style={{padding:'7px 16px',borderRadius:6,border:`1px dashed ${T.border}`,background:'transparent',color:T.textMute,fontSize:12,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>+ New shot</button>
+          <div style={{flex:1}}/>
+          <button onClick={resequenceClips} title="Renumber all clip names in sequence from the first one"
+            style={{padding:'6px 12px',borderRadius:6,border:`1px solid ${T.border}`,background:'transparent',
+              color:T.textDim,fontSize:10,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>
+            {'\u21B3'} Resequence clips
+          </button>
         </div>
       </div>}
 
