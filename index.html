@@ -4224,6 +4224,64 @@ function NotePresetsModal({onClose}){
   );
 }
 
+/* ═══ SearchInputAC — text input with existing-value suggestions ═══
+   Shows a fixed dropdown of unique values already in the data.
+   User can still type anything freely; suggestions just accelerate.
+═══════════════════════════════════════════════════════════════════ */
+function SearchInputAC({value,onChange,suggestions,placeholder}){
+  const [open,setOpen]=React.useState(false);
+  const [fixPos,setFixPos]=React.useState({top:0,left:0,width:140});
+  const wrapRef=React.useRef(null);
+
+  // Only show suggestions that contain the current input (case-insensitive)
+  const filtered=React.useMemo(()=>{
+    if(!suggestions||suggestions.length===0)return[];
+    const q=(value||'').toLowerCase();
+    return q?suggestions.filter(s=>s.toLowerCase().includes(q)):suggestions;
+  },[suggestions,value]);
+
+  function openDropdown(){
+    if(!wrapRef.current||filtered.length===0)return;
+    const r=wrapRef.current.getBoundingClientRect();
+    const up=window.innerHeight-r.bottom<180&&r.top>window.innerHeight-r.bottom;
+    setFixPos({top:up?undefined:r.bottom+2,bottom:up?(window.innerHeight-r.top+2):undefined,
+      left:r.left,width:Math.max(r.width,150)});
+    setOpen(true);
+  }
+  React.useEffect(()=>{
+    if(!open)return;
+    const fn=e=>{if(wrapRef.current&&!wrapRef.current.contains(e.target))setOpen(false);};
+    document.addEventListener('mousedown',fn); document.addEventListener('touchstart',fn);
+    return()=>{document.removeEventListener('mousedown',fn); document.removeEventListener('touchstart',fn);};
+  },[open]);
+
+  return(
+    <div ref={wrapRef} style={{position:'relative',width:'100%'}}>
+      <input value={value||''} placeholder={placeholder||'any'} onChange={e=>{onChange(e.target.value);setOpen(true);}}
+        onFocus={openDropdown}
+        style={{width:'100%',background:T.panel,border:`1px solid ${value?T.accent:T.border}`,
+          borderRadius:4,padding:'5px 7px',fontSize:11,color:T.text,
+          fontFamily:"'Geist Mono',monospace"}}/>
+      {open&&filtered.length>0&&(
+        <div style={{position:'fixed',top:fixPos.top,bottom:fixPos.bottom,left:fixPos.left,
+          width:fixPos.width,zIndex:9500,maxHeight:200,overflowY:'auto',
+          background:T.panel,border:`1px solid ${T.border}`,borderRadius:6,
+          boxShadow:'0 6px 20px rgba(0,0,0,0.5)'}}>
+          {filtered.map((s,i)=>(
+            <button key={i} type="button"
+              onMouseDown={e=>{e.preventDefault();onChange(s);setOpen(false);}}
+              style={{display:'block',width:'100%',textAlign:'left',padding:'8px 11px',
+                background:'transparent',border:'none',borderBottom:`1px solid ${T.rule}`,
+                color:T.text,fontSize:12,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>
+              {s}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LensFocalPicker({value,onChange,options,placeholder,inputStyle,align}){
   const [open,setOpen]=React.useState(false);
   const [fixPos,setFixPos]=React.useState({top:0,left:0,width:150,up:false});
@@ -4646,6 +4704,19 @@ function CameraReport(){
     return out;
   },[searchQ,rolls,hasSearch]);
 
+  // Unique existing values per search field — used for autocomplete suggestions
+  const searchSuggestions=React.useMemo(()=>{
+    const out={};
+    SEARCH_FIELDS.forEach(({k})=>{
+      const vals=new Set();
+      rolls.forEach(r=>(r.takes||[]).forEach(t=>{
+        const v=(t[k]||'').trim(); if(v) vals.add(v);
+      }));
+      out[k]=[...vals].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
+    });
+    return out;
+  },[rolls]);
+
   function setQ(k,v){setSearchQ(prev=>({...prev,[k]:v}));}
   function resetSearch(){setSearchQ({});}
 
@@ -4722,18 +4793,39 @@ function CameraReport(){
     patchRoll(roll.id,{takes:roll.takes.map(t=>t.id===takeId?{...t,shot:shot,take:newTake+''}:t)});
   }
 
+  // Parse a clip name into its numeric parts: "B04" → {pre:'B', num:4, digits:2, suf:''}
+  // Returns null if no number found in the clip name.
+  function parseClip(clip){
+    if(!clip)return null;
+    const m=clip.match(/^(.*?)(\d+)([^\d]*)$/);
+    if(!m)return null;
+    return {pre:m[1], num:parseInt(m[2],10), digits:m[2].length, suf:m[3]};
+  }
+  function fmtClip(parsed,num){
+    return parsed.pre+String(num).padStart(parsed.digits,'0')+parsed.suf;
+  }
+
   // Insert a blank take immediately after the given row.
-  // Inherits scene + shot from the anchor row; take# is recomputed.
+  // Clip auto-fill: new take gets anchor+1, and all subsequent takes whose
+  // clip follows the same naming pattern are renumbered +1 (e.g. B04→B05,
+  // B05→B06 etc.) so the sequence stays contiguous.
   function insertTakeAfter(anchorId){
     if(!roll)return;
     const anchor=roll.takes.find(t=>t.id===anchorId);
+    const anchorIdx=roll.takes.findIndex(t=>t.id===anchorId);
     const scene=anchor?.scene||'';
     const shot=anchor?.shot||'/';
+
+    // Determine new clip value and renumber plan
+    const anchorParsed=parseClip(anchor?.clip||'');
+    const newClip=anchorParsed?fmtClip(anchorParsed,anchorParsed.num+1):'';
+    const insertNum=anchorParsed?anchorParsed.num+1:null;
+
     const newTake={
       id:'tk'+Date.now(),
       scene, shot,
       take:String(takeNoFor(scene,shot)),
-      tail:false, clip:'',
+      tail:false, clip:newClip,
       lens:anchor?.lens||roll.lens||'',
       focal:anchor?.focal||'',
       stop:anchor?.stop||'',
@@ -4744,8 +4836,18 @@ function CameraReport(){
       wb:anchor?.wb||'', focus:'', notes:'',
       photoIds:[], cloudMap:{}
     };
-    const idx=roll.takes.findIndex(t=>t.id===anchorId);
-    const next=[...roll.takes.slice(0,idx+1), newTake, ...roll.takes.slice(idx+1)];
+
+    // Renumber takes AFTER the anchor that share the same clip pattern
+    // and have clip number >= the inserted clip's number → bump each +1
+    const after=roll.takes.slice(anchorIdx+1).map(t=>{
+      if(!anchorParsed||!insertNum)return t;
+      const p=parseClip(t.clip||'');
+      if(!p||p.pre!==anchorParsed.pre||p.suf!==anchorParsed.suf||p.digits!==anchorParsed.digits)return t;
+      if(p.num>=insertNum) return {...t,clip:fmtClip(p,p.num+1)};
+      return t;
+    });
+
+    const next=[...roll.takes.slice(0,anchorIdx+1), newTake, ...after];
     patchRoll(roll.id,{takes:next});
   }
 
@@ -4955,11 +5057,8 @@ function CameraReport(){
             {SEARCH_FIELDS.map(({k,l})=>(
               <div key={k}>
                 <div style={{fontSize:7,fontFamily:"'Geist Mono',monospace",color:T.textDim,letterSpacing:'0.08em',marginBottom:2}}>{l}</div>
-                <input value={searchQ[k]||''} onChange={e=>setQ(k,e.target.value)}
-                  placeholder="any"
-                  style={{width:'100%',background:T.panel,border:`1px solid ${searchQ[k]?T.accent:T.border}`,
-                    borderRadius:4,padding:'5px 7px',fontSize:11,color:T.text,
-                    fontFamily:"'Geist Mono',monospace"}}/>
+                <SearchInputAC value={searchQ[k]||''} onChange={v=>setQ(k,v)}
+                  suggestions={searchSuggestions[k]||[]}/>
               </div>
             ))}
           </div>
