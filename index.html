@@ -82,7 +82,7 @@ const LOC_COLORS=["#7ab6c4","#d49a5c","#c4654b","#7aa37a","#c9a14a","#a07bc4"];
 ═══════════════════════════════════════════════════════════ */
 const LANGS={
   en:{
-    cabinet:"Script Breaker",newVersion:"v12.3 · Camera Report UX",importJson:"Import JSON",
+    cabinet:"Script Breaker",newVersion:"v12.4 · iPad Print Fix",importJson:"Import JSON",
     noProjects:"No projects yet",importFirst:"Import a JSON breakdown from Claude to get started",
     howItWorks:"How it works",
     step1t:"Analyse in Claude Project",step1d:"Upload screenplay PDF to a Claude Project. Ask Claude to output a full breakdown JSON.",
@@ -104,7 +104,7 @@ const LANGS={
     allLocations:"All locations",
   },
   zh:{
-    cabinet:"Script Breaker",newVersion:"v12.3 · 摄影报告优化",importJson:"导入JSON",
+    cabinet:"Script Breaker",newVersion:"v12.4 · iPad打印修复",importJson:"导入JSON",
     noProjects:"暂无项目",importFirst:"从Claude导入JSON解构文件即可开始",
     howItWorks:"使用流程",
     step1t:"在Claude Project分析剧本",step1d:"上传剧本PDF至Claude Project，让Claude输出完整解构JSON。",
@@ -126,7 +126,7 @@ const LANGS={
     allLocations:"全部地点",
   },
   ja:{
-    cabinet:"Script Breaker",newVersion:"v12.3",importJson:"JSONインポート",
+    cabinet:"Script Breaker",newVersion:"v12.4",importJson:"JSONインポート",
     noProjects:"プロジェクトなし",importFirst:"ClaudeからJSONをインポートして開始",
     howItWorks:"使い方",
     step1t:"Claudeで脚本分析",step1d:"脚本PDFをClaudeプロジェクトにアップロード。完全なJSONを出力するよう依頼。",
@@ -5098,6 +5098,20 @@ function CameraReport(){
   // (thumbnail only, embedded directly in the print HTML — never sent to CSV).
   async function exportReport(){
     if(!roll)return;
+    // CRITICAL for Safari/iPad: window.open() must be called synchronously,
+    // in the same tick as the click, before any `await`. Once we cross an
+    // await boundary, Safari no longer considers the call "user-initiated"
+    // and silently blocks it — regardless of window.open vs anchor-click vs
+    // blob URLs. So we open a blank tab RIGHT NOW and write into it later,
+    // once the (async) HTML is ready.
+    const preOpened=window.open('','_blank');
+    if(preOpened){
+      try{
+        preOpened.document.write('<!doctype html><html><head><meta charset="utf-8"><title>Preparing report...</title></head><body style="font-family:-apple-system,sans-serif;background:#111;color:#aaa;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;"><div>Preparing camera report...</div></body></html>');
+        preOpened.document.close();
+      }catch(e){}
+    }
+
     const dayD=shootDays.find(d=>d.day===roll.shootDay);
     const dateStr=roll.date||(dayD&&dayD.date)||'';
     const fcm=(v)=>{v=(v==null?'':String(v)).trim();if(!v)return '';return /^[\d.]+$/.test(v)?v+'cm':v;};
@@ -5175,32 +5189,29 @@ function CameraReport(){
     </div>
     </body></html>`;
 
-    // Safari (macOS/iOS/iPad) blocks window.open('','_blank')+document.write as a popup.
-    // Use a Blob URL instead: try opening it in a new tab via an anchor click
-    // (allowed as a user-gesture navigation, not a scripted popup). If the tab is
-    // blocked, fall back to printing via a hidden iframe on the current page.
+    // Write the finished report into the tab we opened synchronously above —
+    // this works even on Safari/iPad because that tab was opened in direct
+    // response to the click, before any async work happened.
+    if(preOpened && !preOpened.closed){
+      try{
+        preOpened.document.open();
+        preOpened.document.write(html);
+        preOpened.document.close();
+        return;
+      }catch(e){}
+    }
+
+    // Fallback (pre-open was blocked, e.g. some in-app browsers): print via a
+    // hidden iframe on the current page — no new window/tab involved at all.
     const blob=new Blob([html],{type:'text/html'});
     const blobUrl=URL.createObjectURL(blob);
-
-    // Attempt: open in a new tab through a real anchor click (survives Safari's blocker)
-    const a=document.createElement('a');
-    a.href=blobUrl; a.target='_blank'; a.rel='noopener';
-    document.body.appendChild(a);
-    const win=(()=>{ try{ a.click(); return true; }catch(e){ return false; } })();
-    document.body.removeChild(a);
-
-    // Fallback for environments where the tab still doesn't appear:
-    // print silently through a hidden iframe (no popup involved at all).
-    // We keep the blob alive ~60s so the opened tab/iframe can fully load.
-    if(!win){
-      const iframe=document.createElement('iframe');
-      iframe.style.position='fixed'; iframe.style.right='0'; iframe.style.bottom='0';
-      iframe.style.width='0'; iframe.style.height='0'; iframe.style.border='0';
-      iframe.src=blobUrl;
-      iframe.onload=()=>{ try{ iframe.contentWindow.focus(); iframe.contentWindow.print(); }catch(e){} };
-      document.body.appendChild(iframe);
-      setTimeout(()=>{ try{ document.body.removeChild(iframe); }catch(e){} }, 60000);
-    }
+    const iframe=document.createElement('iframe');
+    iframe.style.position='fixed'; iframe.style.right='0'; iframe.style.bottom='0';
+    iframe.style.width='0'; iframe.style.height='0'; iframe.style.border='0';
+    iframe.src=blobUrl;
+    iframe.onload=()=>{ try{ iframe.contentWindow.focus(); iframe.contentWindow.print(); }catch(e){} };
+    document.body.appendChild(iframe);
+    setTimeout(()=>{ try{ document.body.removeChild(iframe); }catch(e){} }, 60000);
     setTimeout(()=>URL.revokeObjectURL(blobUrl), 60000);
   }
 
@@ -5522,16 +5533,16 @@ function CameraReport(){
 
         {/* Take table */}
         <div style={{overflowX:'auto'}}>
-          <table style={{borderCollapse:'collapse',width:'100%',minWidth:1060}}>
+          <table style={{borderCollapse:'collapse',width:'100%',minWidth:1180}}>
             <thead><tr>
               <th style={{...th,minWidth:110}}>SCENE</th><th style={{...th,width:38}}>SHOT</th><th style={{...th,width:46}}>TAKE</th><th style={{...th,width:36}}>T/S</th>
-              <th style={{...th,width:62}}>CLIP</th><th style={{...th,width:100}}>LENS</th><th style={{...th,width:65}}>FOCAL</th>
+              <th style={{...th,width:62}}>CLIP</th><th style={{...th,width:72}}>LENS</th><th style={{...th,width:65}}>FOCAL</th>
               <th style={{...th,width:46}}>STOP</th>
-              <th style={{...th,width:52,whiteSpace:'normal',lineHeight:1.15}}>SHUTTER</th>
+              <th style={{...th,width:80,whiteSpace:'normal',lineHeight:1.15}}>SHUTTER</th>
               <th style={{...th,width:50}}>EI</th><th style={{...th,width:64}}>FILTER 1</th>
-              <th style={{...th,width:64}}>FILTER 2</th><th style={{...th,width:50}}>WB</th>
+              <th style={{...th,width:64}}>FILTER 2</th><th style={{...th,width:76}}>WB</th>
               <th style={{...th,width:46,whiteSpace:'normal',lineHeight:1.15,verticalAlign:'middle'}}>FOCUS<br/>(cm)</th>
-              <th style={th}>NOTES</th><th style={{...th,width:44}}>{'\uD83D\uDCF7'}</th><th style={{...th,width:52}}></th>
+              <th style={{...th,minWidth:180}}>NOTES</th><th style={{...th,width:44}}>{'\uD83D\uDCF7'}</th><th style={{...th,width:78}}></th>
             </tr></thead>
             <tbody>
               {roll.takes.map((t,i)=>{
@@ -5593,11 +5604,13 @@ function CameraReport(){
                       }}
                       onSyncPhoto={(imgId,url)=>patchTake(t.id,{cloudMap:{...(t.cloudMap||{}),[imgId]:url}})}/>
                   </td>
-                  <td style={{textAlign:'center',whiteSpace:'nowrap'}}>
+                  <td style={{textAlign:'center',whiteSpace:'nowrap',padding:'4px 2px'}}>
                     <button onClick={()=>insertTakeAfter(t.id)} title="Insert row below"
-                      style={{background:'transparent',border:'none',color:T.accent,cursor:'pointer',fontSize:14,padding:'2px 4px'}}>+</button>
-                    <button onClick={()=>deleteTake(t.id)}
-                      style={{background:'transparent',border:'none',color:T.textDim,cursor:'pointer',fontSize:12,padding:'2px 4px'}}>x</button>
+                      style={{background:T.accent+'14',border:`1px solid ${T.accent}44`,borderRadius:5,
+                        color:T.accent,cursor:'pointer',fontSize:16,fontWeight:600,width:26,height:26,lineHeight:1,padding:0,marginRight:4}}>+</button>
+                    <button onClick={()=>deleteTake(t.id)} title="Delete row"
+                      style={{background:'transparent',border:`1px solid ${T.border}`,borderRadius:5,
+                        color:T.textDim,cursor:'pointer',fontSize:14,width:26,height:26,lineHeight:1,padding:0}}>{'\u00D7'}</button>
                   </td>
                 </tr>
                 );})}
