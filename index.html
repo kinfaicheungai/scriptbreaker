@@ -82,7 +82,7 @@ const LOC_COLORS=["#7ab6c4","#d49a5c","#c4654b","#7aa37a","#c9a14a","#a07bc4"];
 ═══════════════════════════════════════════════════════════ */
 const LANGS={
   en:{
-    cabinet:"Script Breaker",newVersion:"v12.1 · Camera Report Link",importJson:"Import JSON",
+    cabinet:"Script Breaker",newVersion:"v12.2 · Report Refinements",importJson:"Import JSON",
     noProjects:"No projects yet",importFirst:"Import a JSON breakdown from Claude to get started",
     howItWorks:"How it works",
     step1t:"Analyse in Claude Project",step1d:"Upload screenplay PDF to a Claude Project. Ask Claude to output a full breakdown JSON.",
@@ -104,7 +104,7 @@ const LANGS={
     allLocations:"All locations",
   },
   zh:{
-    cabinet:"Script Breaker",newVersion:"v12.1 · 摄影报告连接",importJson:"导入JSON",
+    cabinet:"Script Breaker",newVersion:"v12.2 · 报告优化",importJson:"导入JSON",
     noProjects:"暂无项目",importFirst:"从Claude导入JSON解构文件即可开始",
     howItWorks:"使用流程",
     step1t:"在Claude Project分析剧本",step1d:"上传剧本PDF至Claude Project，让Claude输出完整解构JSON。",
@@ -126,7 +126,7 @@ const LANGS={
     allLocations:"全部地点",
   },
   ja:{
-    cabinet:"Script Breaker",newVersion:"v12.1",importJson:"JSONインポート",
+    cabinet:"Script Breaker",newVersion:"v12.2",importJson:"JSONインポート",
     noProjects:"プロジェクトなし",importFirst:"ClaudeからJSONをインポートして開始",
     howItWorks:"使い方",
     step1t:"Claudeで脚本分析",step1d:"脚本PDFをClaudeプロジェクトにアップロード。完全なJSONを出力するよう依頼。",
@@ -4183,7 +4183,7 @@ function computeSceneCoverage(rolls){
 }
 
 /* ═══ ScenePicker — multi-select up to 3 scenes per take ═══ */
-function ScenePicker({value,onChange,scenes}){
+function ScenePicker({value,onChange,scenes,displayValue}){
   const [open,setOpen]=React.useState(false);
   const [fixPos,setFixPos]=React.useState({top:0,left:0,width:200});
   const wrapRef=React.useRef(null);
@@ -4212,7 +4212,7 @@ function ScenePicker({value,onChange,scenes}){
   return(
     <div ref={wrapRef} style={{position:'relative',width:'100%'}}>
       <div style={{display:'flex',alignItems:'center'}}>
-        <input value={selected.join(', ')} readOnly placeholder="-" onClick={openPicker}
+        <input value={displayValue!=null?displayValue:selected.join(', ')} readOnly placeholder="-" onClick={openPicker}
           style={{flex:1,minWidth:0,background:'transparent',border:'none',padding:'8px 4px',
             fontSize:12,color:T.text,cursor:'pointer',fontFamily:"'Geist Mono',monospace"}}/>
         <button type="button" onClick={()=>open?setOpen(false):openPicker()}
@@ -4656,6 +4656,16 @@ function CameraReport(){
   const unsubRef=React.useRef(null);
 
   const scenes=proj.scenes||[];
+  // Format a scene string ("S01, S23") into "S01 EXT, S23 INT" using slugs.
+  function sceneWithIE(sceneStr){
+    const ids=String(sceneStr||'').split(',').map(x=>x.trim()).filter(Boolean);
+    if(!ids.length)return '';
+    return ids.map(id=>{
+      const sc=scenes.find(s=>s.id===id);
+      const ie=sc?sceneIntExt(sc.slug):'';
+      return ie?`${id} ${ie}`:id;
+    }).join(', ');
+  }
   const shootDays=(proj.shootDays||[]).slice().sort((a,b)=>a.day-b.day);
 
   // Consume a jump from Breakdown ("view this scene in Camera Report")
@@ -5022,7 +5032,6 @@ function CameraReport(){
   // (thumbnail only, embedded directly in the print HTML — never sent to CSV).
   async function exportReport(){
     if(!roll)return;
-    const sc=(id)=>{const s=scenes.find(x=>x.id===id);return s?s.id:(id||'');};
     const dayD=shootDays.find(d=>d.day===roll.shootDay);
     const dateStr=roll.date||(dayD&&dayD.date)||'';
     const fcm=(v)=>{v=(v==null?'':String(v)).trim();if(!v)return '';return /^[\d.]+$/.test(v)?v+'cm':v;};
@@ -5048,7 +5057,7 @@ function CameraReport(){
     }
 
     const rows=roll.takes.map(t=>`<tr>
-      <td>${sc(t.scene)}</td><td style="text-align:center">${t.shot||''}</td><td style="text-align:center">${t.take||''}</td>
+      <td>${sceneWithIE(t.scene)}</td><td style="text-align:center">${t.shot||''}</td><td style="text-align:center">${t.take||''}</td>
       <td style="text-align:center">${t.tail?'\u2705':''}</td><td>${t.clip||''}</td>
       <td>${t.lens||''}</td><td>${t.focal||''}</td><td>${t.stop||''}</td><td>${t.shutter||roll.shutter||''}</td><td>${t.ei||''}</td>
       <td>${t.intFilters||''}</td><td>${t.filters||''}</td><td>${t.wb||''}</td><td>${fcm(t.focus)}</td>
@@ -5091,8 +5100,7 @@ function CameraReport(){
     <div class="meta">
       <div><b>DATE:</b> ${dateStr}</div><div><b>SHOOT DAY:</b> ${roll.shootDay||''}</div>
       <div><b>CODEC:</b> ${roll.codec||''}</div><div><b>CAMERA:</b> ${roll.camera||''}</div><div><b>LUT:</b> ${roll.lut||''}</div>
-      <div><b>FPS:</b> ${roll.fps||''}</div><div><b>SHUTTER:</b> ${roll.shutter||''}</div>
-      <div><b>BASE EI:</b> ${roll.baseEI||''}</div><div><b>LOCATION:</b> ${roll.location||''}</div>
+      <div><b>FPS:</b> ${roll.fps||''}</div><div><b>LOCATION:</b> ${roll.location||''}</div>
     </div>
     <table><thead><tr>
       <th>SCENE</th><th>SHOT</th><th>TAKE</th><th>T/S</th><th>CLIP</th><th>LENS</th><th>FOCAL</th><th>STOP</th><th>SHUTTER</th><th>EI</th>
@@ -5426,7 +5434,7 @@ function CameraReport(){
               {roll.takes.map((t,i)=>(
                 <tr key={t.id} style={{borderBottom:`1px solid ${T.rule}`,background:i%2?T.surface2+'55':'transparent'}}>
                   <td style={{borderRight:`1px solid ${T.rule}`}}>
-                    <ScenePicker value={t.scene||''} scenes={scenes}
+                    <ScenePicker value={t.scene||''} scenes={scenes} displayValue={sceneWithIE(t.scene)}
                       onChange={v=>{
                         const first=v.split(',')[0].trim();
                         const newTake=first?takeNoFor(first,t.shot||'/',t.id):t.take;
