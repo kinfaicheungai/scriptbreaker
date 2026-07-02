@@ -82,7 +82,7 @@ const LOC_COLORS=["#7ab6c4","#d49a5c","#c4654b","#7aa37a","#c9a14a","#a07bc4"];
 ═══════════════════════════════════════════════════════════ */
 const LANGS={
   en:{
-    cabinet:"Script Breaker",newVersion:"v12.2 · Report Refinements",importJson:"Import JSON",
+    cabinet:"Script Breaker",newVersion:"v12.3 · Camera Report UX",importJson:"Import JSON",
     noProjects:"No projects yet",importFirst:"Import a JSON breakdown from Claude to get started",
     howItWorks:"How it works",
     step1t:"Analyse in Claude Project",step1d:"Upload screenplay PDF to a Claude Project. Ask Claude to output a full breakdown JSON.",
@@ -104,7 +104,7 @@ const LANGS={
     allLocations:"All locations",
   },
   zh:{
-    cabinet:"Script Breaker",newVersion:"v12.2 · 报告优化",importJson:"导入JSON",
+    cabinet:"Script Breaker",newVersion:"v12.3 · 摄影报告优化",importJson:"导入JSON",
     noProjects:"暂无项目",importFirst:"从Claude导入JSON解构文件即可开始",
     howItWorks:"使用流程",
     step1t:"在Claude Project分析剧本",step1d:"上传剧本PDF至Claude Project，让Claude输出完整解构JSON。",
@@ -126,7 +126,7 @@ const LANGS={
     allLocations:"全部地点",
   },
   ja:{
-    cabinet:"Script Breaker",newVersion:"v12.2",importJson:"JSONインポート",
+    cabinet:"Script Breaker",newVersion:"v12.3",importJson:"JSONインポート",
     noProjects:"プロジェクトなし",importFirst:"ClaudeからJSONをインポートして開始",
     howItWorks:"使い方",
     step1t:"Claudeで脚本分析",step1d:"脚本PDFをClaudeプロジェクトにアップロード。完全なJSONを出力するよう依頼。",
@@ -4146,6 +4146,7 @@ function AIFillModal({roll, projId, scenes, onApply, onClose}){
 }
 
 const SB_NOTE_PRESETS_KEY='sb_camrep_note_presets';
+const SB_FOCAL_PRESETS_KEY='sb_camrep_focal_presets';
 
 /* Extract INT / EXT from a scene slug like "INT. ALEX'S APARTMENT - DAY". */
 function sceneIntExt(slug){
@@ -4327,6 +4328,51 @@ function NotePresetsModal({onClose}){
               border:'none',color:'#0e0d0b',fontWeight:600,fontSize:12,cursor:'pointer'}}>Add</button>
           </div>
           {items.length===0&&<div style={{fontSize:11,color:T.textDim,fontStyle:'italic'}}>No presets yet.</div>}
+          {items.map((p,i)=>(
+            <div key={i} style={{display:'flex',alignItems:'center',gap:6,padding:'6px 0',borderBottom:`1px solid ${T.rule}`}}>
+              <span style={{flex:1,fontSize:12,color:T.text,fontFamily:"'Geist Mono',monospace"}}>{p}</span>
+              {i>0&&<button onClick={()=>moveUp(i)} style={{background:'transparent',border:`1px solid ${T.border}`,borderRadius:4,color:T.textDim,fontSize:11,padding:'2px 7px',cursor:'pointer'}}>{'\u2191'}</button>}
+              <button onClick={()=>remove(i)} style={{background:'transparent',border:`1px solid ${T.danger}44`,borderRadius:4,color:T.danger,fontSize:11,padding:'2px 7px',cursor:'pointer'}}>del</button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ═══ FocalPresetsModal — manage focal-length dropdown options ═══ */
+function FocalPresetsModal({onClose,onSaved,defaults}){
+  const [items,setItems]=React.useState(()=>{
+    try{const v=JSON.parse(localStorage.getItem(SB_FOCAL_PRESETS_KEY)||'null');return (Array.isArray(v)&&v.length)?v:(defaults||[]);}catch{return defaults||[];}
+  });
+  const [draft,setDraft]=React.useState('');
+  function save(next){setItems(next);localStorage.setItem(SB_FOCAL_PRESETS_KEY,JSON.stringify(next));onSaved&&onSaved(next);}
+  function add(){let v=draft.trim();if(!v)return;if(/^\d+(\.\d+)?$/.test(v))v=v+'mm';if(items.includes(v))return;save([...items,v]);setDraft('');}
+  function remove(i){save(items.filter((_,idx)=>idx!==i));}
+  function moveUp(i){if(i===0)return;const n=[...items];[n[i-1],n[i]]=[n[i],n[i-1]];save(n);}
+  function resetDefaults(){if(confirm('Reset focal list to defaults?'))save(defaults||[]);}
+  return(
+    <div style={{position:'fixed',inset:0,zIndex:9999,background:'rgba(0,0,0,0.72)',
+      display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
+      <div style={{background:T.panel,border:`1px solid ${T.border}`,borderRadius:10,
+        width:'100%',maxWidth:360,maxHeight:'78vh',overflow:'auto',
+        boxShadow:'0 16px 48px rgba(0,0,0,0.6)',display:'flex',flexDirection:'column'}}>
+        <div style={{padding:'12px 16px',borderBottom:`1px solid ${T.rule}`,display:'flex',alignItems:'center',gap:8}}>
+          <span style={{fontSize:13,fontWeight:600,color:T.text,flex:1}}>Focal Length Presets</span>
+          <button onClick={resetDefaults} style={{fontSize:9,color:T.textDim,background:'transparent',border:`1px solid ${T.border}`,borderRadius:4,padding:'3px 7px',cursor:'pointer',fontFamily:"'Geist Mono',monospace"}}>reset</button>
+          <button onClick={onClose} style={{background:'transparent',border:'none',color:T.textDim,fontSize:18,cursor:'pointer',lineHeight:1}}>{'\u00D7'}</button>
+        </div>
+        <div style={{padding:14,flex:1,overflow:'auto'}}>
+          <div style={{display:'flex',gap:6,marginBottom:12}}>
+            <input value={draft} onChange={e=>setDraft(e.target.value)}
+              onKeyDown={e=>e.key==='Enter'&&add()} placeholder="e.g. 135mm or 135"
+              style={{flex:1,background:T.surface2,border:`1px solid ${T.border}`,borderRadius:5,
+                padding:'7px 10px',fontSize:12,color:T.text,fontFamily:"'Geist Mono',monospace"}}/>
+            <button onClick={add} style={{padding:'7px 14px',borderRadius:5,background:T.accent,
+              border:'none',color:'#0e0d0b',fontWeight:600,fontSize:12,cursor:'pointer'}}>Add</button>
+          </div>
+          {items.length===0&&<div style={{fontSize:11,color:T.textDim,fontStyle:'italic'}}>No focal lengths.</div>}
           {items.map((p,i)=>(
             <div key={i} style={{display:'flex',alignItems:'center',gap:6,padding:'6px 0',borderBottom:`1px solid ${T.rule}`}}>
               <span style={{flex:1,fontSize:12,color:T.text,fontFamily:"'Geist Mono',monospace"}}>{p}</span>
@@ -4640,9 +4686,17 @@ function CameraReport(){
   const projId=proj._id||'default';
 
   // Defaults pulled from the user's template (ALEXA MINI LF camera report)
-  const DEFAULTS={camera:'ALEXA MINI LF',codec:'5K 1.7:1',fps:'23.98',shutter:'180',baseEI:'1600',lut:'Rec 709',director:'David Cook',dop:'Robin Tampoe',ac:'Dimitri Belke'};
+  const DEFAULTS={camera:'ALEXA MINI LF',codec:'5K 1.7:1',fps:'24',shutter:'180',baseEI:'1600',lut:'Rec 709',director:'David Cook',dop:'Robin Tampoe',ac:'Dimitri Belke'};
+  const SHUTTER_OPTIONS=['180','172.8'];
+  // WB 3200K..7000K in 50K steps
+  const WB_OPTIONS=(()=>{const a=[];for(let k=3200;k<=7000;k+=50)a.push(k+'');return a;})();
   const LENS_OPTIONS=['Cooke Panchro i','Cooke S4','Cooke S7','Zeiss Master Prime','Zeiss Ultra Prime','Zeiss Supreme','Arri Signature Prime','Leica Summilux-C','Angenieux Zoom','Canon CN-E'];
-  const FOCAL_OPTIONS=['21mm','27mm','32mm','40mm','50mm','65mm','75mm','85mm','100mm','110mm'];
+  const DEFAULT_FOCAL=['21mm','27mm','32mm','40mm','50mm','65mm','75mm','85mm','100mm','110mm'];
+  const [focalOptions,setFocalOptions]=React.useState(()=>{
+    try{const v=JSON.parse(localStorage.getItem(SB_FOCAL_PRESETS_KEY)||'null');return (Array.isArray(v)&&v.length)?v:DEFAULT_FOCAL;}catch{return DEFAULT_FOCAL;}
+  });
+  const FOCAL_OPTIONS=focalOptions;
+  const [showFocalPresets,setShowFocalPresets]=React.useState(false);
 
   const [rolls,setRolls]=React.useState([]);     // [{id, roll, mag, date, shootDay, location, camera, codec, fps, shutter, baseEI, lut, lens, takes:[]}]
   const [activeRoll,setActiveRoll]=React.useState(null);
@@ -4809,6 +4863,18 @@ function CameraReport(){
     const shot=nextShotForScene(scene);
     const t={id:'tk'+Date.now(),
       scene:scene, shot:shot, take:'1', tail:false, clip:nextClipNumber(),
+      lens:roll.lens||'', focal:last.focal||'', stop:last.stop||'', shutter:last.shutter||roll.shutter||'', ei:roll.baseEI||'', intFilters:last.intFilters||'Hollywood BM', filters:last.filters||'',
+      wb:last.wb||'', focus:'', notes:'', photoIds:[], cloudMap:{}};
+    patchRoll(roll.id,{takes:[...roll.takes,t]});
+  }
+
+  // + New scene: a fresh blank row. Scene is left empty for the user to pick,
+  // shot starts at "/" (US convention) and take at 1. Technical params carry over.
+  function addNewScene(){
+    if(!roll)return;
+    const last=roll.takes[roll.takes.length-1]||{};
+    const t={id:'tk'+Date.now(),
+      scene:'', shot:'/', take:'1', tail:false, clip:nextClipNumber(),
       lens:roll.lens||'', focal:last.focal||'', stop:last.stop||'', shutter:last.shutter||roll.shutter||'', ei:roll.baseEI||'', intFilters:last.intFilters||'Hollywood BM', filters:last.filters||'',
       wb:last.wb||'', focus:'', notes:'', photoIds:[], cloudMap:{}};
     patchRoll(roll.id,{takes:[...roll.takes,t]});
@@ -5108,8 +5174,34 @@ function CameraReport(){
     </tr></thead><tbody>${rows}</tbody></table>
     </div>
     </body></html>`;
-    const w=window.open('','_blank');
-    if(w){ w.document.write(html); w.document.close(); }
+
+    // Safari (macOS/iOS/iPad) blocks window.open('','_blank')+document.write as a popup.
+    // Use a Blob URL instead: try opening it in a new tab via an anchor click
+    // (allowed as a user-gesture navigation, not a scripted popup). If the tab is
+    // blocked, fall back to printing via a hidden iframe on the current page.
+    const blob=new Blob([html],{type:'text/html'});
+    const blobUrl=URL.createObjectURL(blob);
+
+    // Attempt: open in a new tab through a real anchor click (survives Safari's blocker)
+    const a=document.createElement('a');
+    a.href=blobUrl; a.target='_blank'; a.rel='noopener';
+    document.body.appendChild(a);
+    const win=(()=>{ try{ a.click(); return true; }catch(e){ return false; } })();
+    document.body.removeChild(a);
+
+    // Fallback for environments where the tab still doesn't appear:
+    // print silently through a hidden iframe (no popup involved at all).
+    // We keep the blob alive ~60s so the opened tab/iframe can fully load.
+    if(!win){
+      const iframe=document.createElement('iframe');
+      iframe.style.position='fixed'; iframe.style.right='0'; iframe.style.bottom='0';
+      iframe.style.width='0'; iframe.style.height='0'; iframe.style.border='0';
+      iframe.src=blobUrl;
+      iframe.onload=()=>{ try{ iframe.contentWindow.focus(); iframe.contentWindow.print(); }catch(e){} };
+      document.body.appendChild(iframe);
+      setTimeout(()=>{ try{ document.body.removeChild(iframe); }catch(e){} }, 60000);
+    }
+    setTimeout(()=>URL.revokeObjectURL(blobUrl), 60000);
   }
 
   function exportCSV(){
@@ -5162,6 +5254,11 @@ function CameraReport(){
             background:'transparent',border:`1px solid ${T.border}`,color:T.textDim,cursor:'pointer'}}>
           {'\u2699\uFE0F'} Notes
         </button>
+        <button onClick={()=>setShowFocalPresets(true)} title="Manage focal length presets"
+          style={{padding:'4px 10px',borderRadius:5,fontSize:10,fontFamily:"'Geist Mono',monospace",
+            background:'transparent',border:`1px solid ${T.border}`,color:T.textDim,cursor:'pointer'}}>
+          {'\u2699\uFE0F'} Focal
+        </button>
         {roll&&<button onClick={exportCSV} style={{padding:'4px 10px',borderRadius:5,fontSize:10,fontFamily:"'Geist Mono',monospace",background:'transparent',border:`1px solid ${T.border}`,color:T.textMute,cursor:'pointer'}}>CSV</button>}
         {roll&&<button disabled={exporting} onClick={async()=>{ setExporting(true); try{ await exportReport(); }finally{ setExporting(false); } }} style={{padding:'4px 10px',borderRadius:5,fontSize:10,fontFamily:"'Geist Mono',monospace",background:T.accent+'18',border:`1px solid ${T.accent}44`,color:T.accent,cursor:exporting?'default':'pointer',opacity:exporting?0.6:1}}>{exporting?'Preparing...':<>{'\uD83D\uDDA8'} Print / PDF</>}</button>}
         <button onClick={addRoll} style={{padding:'4px 12px',borderRadius:5,fontSize:11,fontFamily:"'Geist Mono',monospace",background:T.accent,border:'none',color:'#0e0d0b',fontWeight:600,cursor:'pointer'}}>+ New Roll</button>
@@ -5196,16 +5293,22 @@ function CameraReport(){
       {rolls.length>0&&(()=>{
         const visRolls=filterDay==='all'?rolls:rolls.filter(r=>r.shootDay===filterDay);
         return(
-          <div style={{display:'flex',gap:5,padding:'6px 16px 0',flexShrink:0,overflowX:'auto'}}>
+          <div style={{display:'flex',gap:8,padding:'8px 16px 4px',flexShrink:0,alignItems:'center'}}>
             {visRolls.length===0
               ?<span style={{fontSize:11,color:T.textDim,fontFamily:"'Geist Mono',monospace",padding:'4px 0'}}>No rolls for this day yet</span>
-              :visRolls.map(r=>(
-                <button key={r.id} onClick={()=>setActiveRoll(r.id)} style={{padding:'4px 12px',borderRadius:'6px 6px 0 0',whiteSpace:'nowrap',
-                  background:activeRoll===r.id?T.surface2:'transparent',border:`1px solid ${activeRoll===r.id?T.border:'transparent'}`,borderBottom:'none',
-                  color:activeRoll===r.id?T.text:T.textDim,fontSize:11,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>
-                  {r.roll||'(roll)'} {'\u00B7'} D{r.shootDay||'?'} {'\u00B7'} {(r.takes||[]).length}
-                </button>
-              ))
+              :<>
+                <span style={{fontSize:9,fontFamily:"'Geist Mono',monospace",color:T.textDim,letterSpacing:'0.08em'}}>ROLL</span>
+                <select value={activeRoll||''} onChange={e=>setActiveRoll(e.target.value)}
+                  style={{background:T.surface2,border:`1px solid ${T.border}`,borderRadius:6,
+                    padding:'6px 10px',fontSize:13,color:T.accent,fontWeight:600,
+                    fontFamily:"'Geist Mono',monospace",cursor:'pointer',minWidth:180}}>
+                  {visRolls.map(r=>(
+                    <option key={r.id} value={r.id}>
+                      {r.roll||'(roll)'} {'\u00B7'} Day {r.shootDay||'?'} {'\u00B7'} {(r.takes||[]).length} takes
+                    </option>
+                  ))}
+                </select>
+              </>
             }
           </div>
         );
@@ -5431,8 +5534,14 @@ function CameraReport(){
               <th style={th}>NOTES</th><th style={{...th,width:44}}>{'\uD83D\uDCF7'}</th><th style={{...th,width:52}}></th>
             </tr></thead>
             <tbody>
-              {roll.takes.map((t,i)=>(
-                <tr key={t.id} style={{borderBottom:`1px solid ${T.rule}`,background:i%2?T.surface2+'55':'transparent'}}>
+              {roll.takes.map((t,i)=>{
+                const prev=i>0?roll.takes[i-1]:null;
+                // Bold divider when this row starts a new shot or new scene
+                const newGroup=prev&&((prev.shot||'')!==(t.shot||'')||(prev.scene||'')!==(t.scene||''));
+                return(
+                <tr key={t.id} style={{borderBottom:`1px solid ${T.rule}`,
+                  borderTop:newGroup?`2px solid ${T.accent}66`:'none',
+                  background:i%2?T.surface2+'55':'transparent'}}>
                   <td style={{borderRight:`1px solid ${T.rule}`}}>
                     <ScenePicker value={t.scene||''} scenes={scenes} displayValue={sceneWithIE(t.scene)}
                       onChange={v=>{
@@ -5468,11 +5577,11 @@ function CameraReport(){
                   <td style={{borderRight:`1px solid ${T.rule}`}}><LensFocalPicker value={t.lens||''} onChange={v=>patchTake(t.id,{lens:v})} options={LENS_OPTIONS} inputStyle={cellInput}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}><LensFocalPicker value={t.focal||''} onChange={v=>patchTake(t.id,{focal:v})} options={FOCAL_OPTIONS} inputStyle={cellInput}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.stop||''} onChange={e=>patchTake(t.id,{stop:e.target.value})} style={cellInput}/></td>
-                  <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.shutter||''} placeholder={roll.shutter||''} onChange={e=>patchTake(t.id,{shutter:e.target.value})} style={{...cellInput,textAlign:'center'}}/></td>
+                  <td style={{borderRight:`1px solid ${T.rule}`}}><LensFocalPicker value={t.shutter||''} onChange={v=>patchTake(t.id,{shutter:v})} options={SHUTTER_OPTIONS} placeholder={roll.shutter||''} inputStyle={{...cellInput,textAlign:'center'}}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.ei||''} onChange={e=>patchTake(t.id,{ei:e.target.value})} style={cellInput}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.intFilters||''} onChange={e=>patchTake(t.id,{intFilters:e.target.value})} style={cellInput}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.filters||''} onChange={e=>patchTake(t.id,{filters:e.target.value})} style={cellInput}/></td>
-                  <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.wb||''} onChange={e=>patchTake(t.id,{wb:e.target.value})} style={cellInput}/></td>
+                  <td style={{borderRight:`1px solid ${T.rule}`}}><LensFocalPicker value={t.wb||''} onChange={v=>patchTake(t.id,{wb:v})} options={WB_OPTIONS} inputStyle={cellInput}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.focus||''} placeholder="cm" onChange={e=>patchTake(t.id,{focus:e.target.value})} style={{...cellInput,padding:'8px 3px',textAlign:'center'}}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}><NotesPicker value={t.notes||''} onChange={v=>patchTake(t.id,{notes:v})}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`,padding:'4px 2px'}}>
@@ -5491,13 +5600,14 @@ function CameraReport(){
                       style={{background:'transparent',border:'none',color:T.textDim,cursor:'pointer',fontSize:12,padding:'2px 4px'}}>x</button>
                   </td>
                 </tr>
-              ))}
+                );})}
             </tbody>
           </table>
         </div>
         <div style={{padding:'10px 16px',display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
           <button onClick={addTake} style={{padding:'7px 16px',borderRadius:6,border:`1px dashed ${T.accent}66`,background:T.accent+'10',color:T.accent,fontSize:12,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>+ Add take</button>
           <button onClick={addShot} style={{padding:'7px 16px',borderRadius:6,border:`1px dashed ${T.border}`,background:'transparent',color:T.textMute,fontSize:12,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>+ New shot</button>
+          <button onClick={addNewScene} style={{padding:'7px 16px',borderRadius:6,border:`1px dashed ${T.border}`,background:'transparent',color:T.textMute,fontSize:12,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>+ New scene</button>
           <div style={{flex:1}}/>
           <button onClick={resequenceClips} title="Renumber all clip names in sequence from the first one"
             style={{padding:'6px 12px',borderRadius:6,border:`1px solid ${T.border}`,background:'transparent',
@@ -5516,6 +5626,7 @@ function CameraReport(){
           onClose={()=>setShowAIFill(false)}/>
       )}
       {showNotePresets&&<NotePresetsModal onClose={()=>setShowNotePresets(false)}/>}
+      {showFocalPresets&&<FocalPresetsModal onClose={()=>setShowFocalPresets(false)} onSaved={setFocalOptions} defaults={DEFAULT_FOCAL}/>}
     </div>
   );
 }
@@ -5524,7 +5635,7 @@ function OnSetNotes(){
   const {proj,navTarget} = useProj();
   const mob = useMobile();
 
-  const [mainTab, setMainTab] = React.useState('notes'); // 'notes' | 'camera'
+  const [mainTab, setMainTab] = React.useState('camera'); // 'camera' | 'notes'
 
   // If we were sent here to view a scene in the Camera Report, open that tab.
   React.useEffect(()=>{
@@ -5606,19 +5717,19 @@ function OnSetNotes(){
   return(
     <div style={{height:'100%',display:'flex',flexDirection:'column',overflow:'hidden'}}>
 
-      {/* Main switch: Notes / Camera Report */}
+      {/* Main switch: Camera Report / Notes */}
       <div style={{padding:mob?'6px 10px 0':'8px 20px 0',display:'flex',gap:6,flexShrink:0}}>
-        <button onClick={()=>setMainTab('notes')}
-          style={{padding:'5px 14px',borderRadius:'6px 6px 0 0',border:`1px solid ${mainTab==='notes'?T.border:'transparent'}`,borderBottom:'none',
-            background:mainTab==='notes'?T.panel:'transparent',color:mainTab==='notes'?T.text:T.textDim,
-            fontSize:12,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>
-          {'\uD83D\uDCDD'} Notes
-        </button>
         <button onClick={()=>setMainTab('camera')}
           style={{padding:'5px 14px',borderRadius:'6px 6px 0 0',border:`1px solid ${mainTab==='camera'?T.border:'transparent'}`,borderBottom:'none',
             background:mainTab==='camera'?T.panel:'transparent',color:mainTab==='camera'?T.text:T.textDim,
             fontSize:12,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>
           {'\uD83C\uDFA5'} Camera Report
+        </button>
+        <button onClick={()=>setMainTab('notes')}
+          style={{padding:'5px 14px',borderRadius:'6px 6px 0 0',border:`1px solid ${mainTab==='notes'?T.border:'transparent'}`,borderBottom:'none',
+            background:mainTab==='notes'?T.panel:'transparent',color:mainTab==='notes'?T.text:T.textDim,
+            fontSize:12,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>
+          {'\uD83D\uDCDD'} Notes
         </button>
       </div>
 
