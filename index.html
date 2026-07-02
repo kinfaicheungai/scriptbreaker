@@ -82,7 +82,7 @@ const LOC_COLORS=["#7ab6c4","#d49a5c","#c4654b","#7aa37a","#c9a14a","#a07bc4"];
 ═══════════════════════════════════════════════════════════ */
 const LANGS={
   en:{
-    cabinet:"Script Breaker",newVersion:"v12 · Scene Breakdown",importJson:"Import JSON",
+    cabinet:"Script Breaker",newVersion:"v12.1 · Camera Report Link",importJson:"Import JSON",
     noProjects:"No projects yet",importFirst:"Import a JSON breakdown from Claude to get started",
     howItWorks:"How it works",
     step1t:"Analyse in Claude Project",step1d:"Upload screenplay PDF to a Claude Project. Ask Claude to output a full breakdown JSON.",
@@ -104,7 +104,7 @@ const LANGS={
     allLocations:"All locations",
   },
   zh:{
-    cabinet:"Script Breaker",newVersion:"v12 · 场景拆解",importJson:"导入JSON",
+    cabinet:"Script Breaker",newVersion:"v12.1 · 摄影报告连接",importJson:"导入JSON",
     noProjects:"暂无项目",importFirst:"从Claude导入JSON解构文件即可开始",
     howItWorks:"使用流程",
     step1t:"在Claude Project分析剧本",step1d:"上传剧本PDF至Claude Project，让Claude输出完整解构JSON。",
@@ -126,7 +126,7 @@ const LANGS={
     allLocations:"全部地点",
   },
   ja:{
-    cabinet:"Script Breaker",newVersion:"v12",importJson:"JSONインポート",
+    cabinet:"Script Breaker",newVersion:"v12.1",importJson:"JSONインポート",
     noProjects:"プロジェクトなし",importFirst:"ClaudeからJSONをインポートして開始",
     howItWorks:"使い方",
     step1t:"Claudeで脚本分析",step1d:"脚本PDFをClaudeプロジェクトにアップロード。完全なJSONを出力するよう依頼。",
@@ -2318,6 +2318,22 @@ function BDView(){
   const [selSceneBD,setSelSceneBD]=useState(null);
   const bdResizing=React.useRef(false);
 
+  // Load camera-report coverage (which scenes have been shot, how many shots/takes).
+  const [camCoverage,setCamCoverage]=useState({});
+  const [bdShotFilter,setBdShotFilter]=useState('all'); // 'all' | 'shot' | 'unshot'
+  React.useEffect(()=>{
+    const projId=proj._id||'default';
+    let unsub=null;
+    try{
+      const db=getFirestore();
+      unsub=db.collection('camera_reports').doc(projId).onSnapshot(doc=>{
+        const rolls=(doc.exists&&doc.data().rolls)||[];
+        setCamCoverage(computeSceneCoverage(rolls));
+      },()=>{});
+    }catch(e){}
+    return ()=>{ if(unsub)unsub(); };
+  },[proj._id]);
+
   // Consume cross-view jump (e.g. Daily -> "View Breakdown" for a scene)
   React.useEffect(()=>{
     if(navTarget && navTarget.view==='breakdown'){
@@ -2453,18 +2469,59 @@ function BDView(){
 
         {tab==='scenes'&&<>
           <div style={{width:mob?'100%':bdLeftWidth,flexShrink:0,overflow:'auto',padding:'8px 0',display:mob&&selSceneBD?'none':'block',maxHeight:mob?'45vh':undefined}}>
-            {(proj.scenes||[]).filter(s=>!q||contains(s.id)||contains(s.slug)).map(s=>{
+            {(()=>{
+              const allScenes=proj.scenes||[];
+              const shotCount=allScenes.filter(s=>camCoverage[s.id]).length;
+              const total=allScenes.length;
+              const pct=total?Math.round(shotCount/total*100):0;
+              return(
+                <div style={{padding:'4px 14px 10px',borderBottom:`1px solid ${T.rule}`,marginBottom:6}}>
+                  <div style={{display:'flex',alignItems:'baseline',gap:6,marginBottom:6}}>
+                    <span style={{fontSize:18,fontWeight:700,color:T.accent,fontFamily:"'Geist Mono',monospace"}}>{shotCount}</span>
+                    <span style={{fontSize:11,color:T.textDim,fontFamily:"'Geist Mono',monospace"}}>/ {total} scenes shot</span>
+                    <span style={{flex:1}}/>
+                    <span style={{fontSize:11,color:T.textMute,fontFamily:"'Geist Mono',monospace"}}>{pct}%</span>
+                  </div>
+                  <div style={{height:5,borderRadius:3,background:T.surface2,overflow:'hidden',marginBottom:8}}>
+                    <div style={{height:'100%',width:pct+'%',background:T.accent,borderRadius:3,transition:'width 0.3s'}}/>
+                  </div>
+                  <div style={{display:'flex',gap:4}}>
+                    {[{k:'all',l:'All'},{k:'shot',l:'\u2705 Shot'},{k:'unshot',l:'\u25CB Unshot'}].map(({k,l})=>(
+                      <button key={k} onClick={()=>setBdShotFilter(k)}
+                        style={{flex:1,padding:'4px 0',borderRadius:5,fontSize:9,fontFamily:"'Geist Mono',monospace",cursor:'pointer',
+                          background:bdShotFilter===k?T.accent+'22':'transparent',
+                          border:`1px solid ${bdShotFilter===k?T.accent+'55':T.border}`,
+                          color:bdShotFilter===k?T.accent:T.textDim}}>{l}</button>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+            {(proj.scenes||[]).filter(s=>!q||contains(s.id)||contains(s.slug))
+              .filter(s=>{
+                if(bdShotFilter==='shot')return !!camCoverage[s.id];
+                if(bdShotFilter==='unshot')return !camCoverage[s.id];
+                return true;
+              })
+              .map(s=>{
               const loc=findLoc(proj,s.locationId);
               const nC=(s.characters||[]).length;
+              const cov=camCoverage[s.id];
+              const ie=sceneIntExt(s.slug);
               return(
                 <button key={s.id} onClick={()=>setSelSceneBD(s.id)} style={{width:'100%',padding:'9px 14px',textAlign:'left',background:selSceneBD===s.id?T.chip:'transparent',borderLeft:selSceneBD===s.id?`2px solid ${loc?.color||T.accent}`:'2px solid transparent',marginBottom:2}}>
                   <div style={{display:'flex',alignItems:'center',gap:8}}>
                     <span style={{fontFamily:"'Geist Mono',monospace",fontSize:10,color:T.textDim,flexShrink:0}}>{s.id}</span>
+                    {ie&&<span style={{flexShrink:0,fontSize:7,fontWeight:600,padding:'1px 3px',borderRadius:2,
+                      background:ie==='EXT'?'#3b82f622':ie==='INT'?'#f59e0b22':'#a78bfa22',
+                      color:ie==='EXT'?'#60a5fa':ie==='INT'?'#fbbf24':'#c4b5fd'}}>{ie}</span>}
                     <div style={{flex:1,overflow:'hidden'}}>
                       <div style={{fontSize:12,color:selSceneBD===s.id?T.text:T.textMute,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{loc?.name||s.slug}</div>
                       <div style={{fontSize:10,color:T.textDim,fontFamily:"'Geist Mono',monospace"}}>{s.timeOfDay} - {nC} char - {s.pages}p</div>
                     </div>
-                    {loc&&<div style={{width:6,height:6,borderRadius:'50%',background:loc.color,flexShrink:0}}/>}
+                    {cov
+                      ?<span title={`${cov.shots} shots, ${cov.takes} takes recorded`} style={{flexShrink:0,fontSize:9,color:T.success,fontFamily:"'Geist Mono',monospace"}}>{'\u2705'}{cov.takes}</span>
+                      :<span title="Not yet shot" style={{flexShrink:0,fontSize:9,color:T.textDim}}>{'\u25CB'}</span>}
                   </div>
                 </button>
               );
@@ -2498,6 +2555,25 @@ function BDView(){
                     <Pill>{s.timeOfDay}</Pill>
                     <Pill>ACT {s.act}</Pill>
                     <Pill>{s.pages}p</Pill>
+                    {(()=>{
+                      const cov=camCoverage[s.id];
+                      const jump=()=>{ const nav=window.__sbNavigateTo; if(nav) nav('notes',{camSearchScene:s.id, fromView:'breakdown', fromSceneId:s.id, fromLabel:'Breakdown'}); };
+                      if(cov){
+                        return(
+                          <button onClick={jump} title="View in Camera Report"
+                            style={{display:'inline-flex',alignItems:'center',gap:6,padding:'3px 10px',borderRadius:5,cursor:'pointer',
+                              background:T.success+'18',border:`1px solid ${T.success}44`,color:T.success,fontSize:11,fontFamily:"'Geist Mono',monospace"}}>
+                            {'\uD83D\uDCF7'} {cov.shots} shot{cov.shots!==1?'s':''} {'\u00B7'} {cov.takes} take{cov.takes!==1?'s':''} {'\u2192'}
+                          </button>
+                        );
+                      }
+                      return(
+                        <span style={{display:'inline-flex',alignItems:'center',gap:5,padding:'3px 10px',borderRadius:5,
+                          background:T.surface2,border:`1px solid ${T.border}`,color:T.textDim,fontSize:11,fontFamily:"'Geist Mono',monospace"}}>
+                          {'\u25CB'} not shot yet
+                        </span>
+                      );
+                    })()}
                   </div>
 
                   <div style={cardStyle}>
@@ -4071,6 +4147,41 @@ function AIFillModal({roll, projId, scenes, onApply, onClose}){
 
 const SB_NOTE_PRESETS_KEY='sb_camrep_note_presets';
 
+/* Extract INT / EXT from a scene slug like "INT. ALEX'S APARTMENT - DAY". */
+function sceneIntExt(slug){
+  if(!slug)return '';
+  const s=slug.toUpperCase();
+  const hasInt=/\bINT\b/.test(s);
+  const hasExt=/\bEXT\b/.test(s);
+  if(hasInt&&hasExt)return 'I/E';
+  if(hasInt)return 'INT';
+  if(hasExt)return 'EXT';
+  return '';
+}
+
+/* Aggregate camera-report coverage per scene id across all rolls.
+   A take's scene field may hold multiple comma-separated scene ids.
+   Returns { [sceneId]: {takes, shots, rolls} }. */
+function computeSceneCoverage(rolls){
+  const map={};
+  (rolls||[]).forEach(r=>{
+    (r.takes||[]).forEach(t=>{
+      const ids=String(t.scene||'').split(',').map(x=>x.trim()).filter(Boolean);
+      ids.forEach(id=>{
+        if(!map[id])map[id]={takes:0,shotSet:new Set(),rollSet:new Set()};
+        map[id].takes++;
+        map[id].shotSet.add((t.shot||'/')+'');
+        map[id].rollSet.add(r.id);
+      });
+    });
+  });
+  const out={};
+  Object.entries(map).forEach(([id,v])=>{
+    out[id]={takes:v.takes,shots:v.shotSet.size,rolls:v.rollSet.size};
+  });
+  return out;
+}
+
 /* ═══ ScenePicker — multi-select up to 3 scenes per take ═══ */
 function ScenePicker({value,onChange,scenes}){
   const [open,setOpen]=React.useState(false);
@@ -4115,6 +4226,7 @@ function ScenePicker({value,onChange,scenes}){
           {scenes.map(s=>{
             const sel=selected.includes(s.id);
             const idx=selected.indexOf(s.id);
+            const ie=sceneIntExt(s.slug);
             return(
               <button key={s.id} type="button" onMouseDown={e=>{e.preventDefault();toggleScene(s.id);}}
                 style={{display:'flex',alignItems:'center',gap:8,width:'100%',textAlign:'left',
@@ -4126,6 +4238,10 @@ function ScenePicker({value,onChange,scenes}){
                   {sel?idx+1:''}
                 </span>
                 <span style={{flexShrink:0,color:T.textDim,fontSize:10,minWidth:36}}>{s.id}</span>
+                {ie&&<span style={{flexShrink:0,fontSize:8,fontWeight:600,padding:'1px 4px',borderRadius:3,
+                  background:ie==='EXT'?'#3b82f622':ie==='INT'?'#f59e0b22':'#a78bfa22',
+                  color:ie==='EXT'?'#60a5fa':ie==='INT'?'#fbbf24':'#c4b5fd',
+                  border:`1px solid ${ie==='EXT'?'#3b82f644':ie==='INT'?'#f59e0b44':'#a78bfa44'}`}}>{ie}</span>}
                 <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',fontSize:11}}>{s.slug||''}</span>
               </button>
             );
@@ -4519,7 +4635,7 @@ function TakePhotoCell({projId,take,onAddPhoto,onRemovePhoto,onSyncPhoto}){
 }
 
 function CameraReport(){
-  const {proj}=useProj();
+  const {proj,navTarget,clearNavTarget}=useProj();
   const mob=useMobile();
   const projId=proj._id||'default';
 
@@ -4541,6 +4657,15 @@ function CameraReport(){
 
   const scenes=proj.scenes||[];
   const shootDays=(proj.shootDays||[]).slice().sort((a,b)=>a.day-b.day);
+
+  // Consume a jump from Breakdown ("view this scene in Camera Report")
+  React.useEffect(()=>{
+    if(navTarget && navTarget.view==='notes' && navTarget.camSearchScene){
+      setShowSearch(true);
+      setSearchQ({scene:navTarget.camSearchScene});
+      clearNavTarget&&clearNavTarget();
+    }
+  },[navTarget, clearNavTarget]);
 
   // Firestore realtime sync (same project, separate collection)
   React.useEffect(()=>{
@@ -5307,6 +5432,24 @@ function CameraReport(){
                         const newTake=first?takeNoFor(first,t.shot||'/',t.id):t.take;
                         patchTake(t.id,{scene:v,take:String(newTake)});
                       }}/>
+                    {String(t.scene||'').trim()&&(()=>{
+                      const firstScene=String(t.scene).split(',')[0].trim();
+                      const jump=(view)=>{
+                        const nav=window.__sbNavigateTo;
+                        if(nav) nav(view,{sceneId:firstScene, tab:view==='breakdown'?'scenes':undefined,
+                          fromView:'notes', fromLabel:'Camera Report'});
+                      };
+                      return(
+                        <div style={{display:'flex',gap:4,padding:'0 4px 4px'}}>
+                          <button onClick={()=>jump('shots')} title="Open in Shot Board"
+                            style={{fontSize:8,padding:'1px 5px',borderRadius:3,cursor:'pointer',
+                              background:'transparent',border:`1px solid ${T.border}`,color:T.textDim,fontFamily:"'Geist Mono',monospace"}}>SB {'\u2192'}</button>
+                          <button onClick={()=>jump('breakdown')} title="Open in Breakdown"
+                            style={{fontSize:8,padding:'1px 5px',borderRadius:3,cursor:'pointer',
+                              background:'transparent',border:`1px solid ${T.border}`,color:T.textDim,fontFamily:"'Geist Mono',monospace"}}>BD {'\u2192'}</button>
+                        </div>
+                      );
+                    })()}
                   </td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.shot||''} placeholder="/" onChange={e=>changeTakeShot(t.id,e.target.value.toUpperCase())} style={{...cellInput,textAlign:'center'}}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.take||''} onChange={e=>patchTake(t.id,{take:e.target.value})} style={{...cellInput,textAlign:'center'}} inputMode="numeric"/></td>
@@ -5370,10 +5513,17 @@ function CameraReport(){
 }
 
 function OnSetNotes(){
-  const {proj} = useProj();
+  const {proj,navTarget} = useProj();
   const mob = useMobile();
 
   const [mainTab, setMainTab] = React.useState('notes'); // 'notes' | 'camera'
+
+  // If we were sent here to view a scene in the Camera Report, open that tab.
+  React.useEffect(()=>{
+    if(navTarget && navTarget.view==='notes' && navTarget.camSearchScene){
+      setMainTab('camera');
+    }
+  },[navTarget]);
   const [notes, setNotes] = React.useState([]);
   const [selDept, setSelDept] = React.useState('all');
   const [selScene, setSelScene] = React.useState('all');
