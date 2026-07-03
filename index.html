@@ -82,7 +82,7 @@ const LOC_COLORS=["#7ab6c4","#d49a5c","#c4654b","#7aa37a","#c9a14a","#a07bc4"];
 ═══════════════════════════════════════════════════════════ */
 const LANGS={
   en:{
-    cabinet:"Script Breaker",newVersion:"v12.5 · Column Polish",importJson:"Import JSON",
+    cabinet:"Script Breaker",newVersion:"v12.6 · Notes Multi-select",importJson:"Import JSON",
     noProjects:"No projects yet",importFirst:"Import a JSON breakdown from Claude to get started",
     howItWorks:"How it works",
     step1t:"Analyse in Claude Project",step1d:"Upload screenplay PDF to a Claude Project. Ask Claude to output a full breakdown JSON.",
@@ -104,7 +104,7 @@ const LANGS={
     allLocations:"All locations",
   },
   zh:{
-    cabinet:"Script Breaker",newVersion:"v12.5 · 栏位优化",importJson:"导入JSON",
+    cabinet:"Script Breaker",newVersion:"v12.6 · 备注多选",importJson:"导入JSON",
     noProjects:"暂无项目",importFirst:"从Claude导入JSON解构文件即可开始",
     howItWorks:"使用流程",
     step1t:"在Claude Project分析剧本",step1d:"上传剧本PDF至Claude Project，让Claude输出完整解构JSON。",
@@ -126,7 +126,7 @@ const LANGS={
     allLocations:"全部地点",
   },
   ja:{
-    cabinet:"Script Breaker",newVersion:"v12.5",importJson:"JSONインポート",
+    cabinet:"Script Breaker",newVersion:"v12.6",importJson:"JSONインポート",
     noProjects:"プロジェクトなし",importFirst:"ClaudeからJSONをインポートして開始",
     howItWorks:"使い方",
     step1t:"Claudeで脚本分析",step1d:"脚本PDFをClaudeプロジェクトにアップロード。完全なJSONを出力するよう依頼。",
@@ -4275,6 +4275,29 @@ function NotesPicker({value,onChange}){
   const presets=React.useMemo(()=>{
     try{return JSON.parse(localStorage.getItem(SB_NOTE_PRESETS_KEY)||'[]');}catch{return[];}
   },[open]);
+
+  // Split the note field into tokens separated by "; ". A token can be a
+  // preset OR free text — both coexist. Trailing empty tokens (from a
+  // dangling delimiter) are stripped.
+  function parseTokens(v){
+    return String(v||'').split(';').map(s=>s.trim()).filter(Boolean);
+  }
+  function joinTokens(tokens){
+    return tokens.join('; ');
+  }
+  // Toggle a preset: if it's already among the tokens, remove it; otherwise
+  // append it. Anything the user typed manually (free text tokens) is
+  // preserved untouched.
+  function togglePreset(p){
+    const tokens=parseTokens(value);
+    const idx=tokens.indexOf(p);
+    let next;
+    if(idx>=0){ next=tokens.filter((_,i)=>i!==idx); }
+    else{ next=[...tokens,p]; }
+    onChange(joinTokens(next));
+  }
+  const selectedTokens=parseTokens(value);
+
   function openPicker(){
     if(!wrapRef.current||presets.length===0)return;
     const r=wrapRef.current.getBoundingClientRect();
@@ -4288,6 +4311,7 @@ function NotesPicker({value,onChange}){
     document.addEventListener('mousedown',fn); document.addEventListener('touchstart',fn);
     return()=>{document.removeEventListener('mousedown',fn); document.removeEventListener('touchstart',fn);};
   },[open]);
+
   return(
     <div ref={wrapRef} style={{position:'relative',width:'100%'}}>
       <input value={value||''} onChange={e=>onChange(e.target.value)} onFocus={openPicker}
@@ -4295,17 +4319,29 @@ function NotesPicker({value,onChange}){
           color:T.text,width:'100%',fontFamily:"'Geist Mono',monospace"}}/>
       {open&&presets.length>0&&(
         <div style={{position:'fixed',top:fixPos.top,bottom:fixPos.bottom,left:fixPos.left,
-          width:fixPos.width,zIndex:9500,maxHeight:220,overflowY:'auto',
+          width:fixPos.width,zIndex:9500,maxHeight:260,overflowY:'auto',
           background:T.panel,border:`1px solid ${T.border}`,borderRadius:7,boxShadow:'0 8px 24px rgba(0,0,0,0.5)'}}>
-          <div style={{padding:'5px 10px 3px',fontSize:8,fontFamily:"'Geist Mono',monospace",color:T.textDim,letterSpacing:'0.08em'}}>QUICK SELECT</div>
-          {presets.map((p,i)=>(
-            <button key={i} type="button" onMouseDown={e=>{e.preventDefault();onChange(p);setOpen(false);}}
-              style={{display:'block',width:'100%',textAlign:'left',padding:'9px 13px',
-                background:'transparent',border:'none',borderBottom:`1px solid ${T.rule}`,
-                color:T.text,fontSize:12,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>
-              {p}
-            </button>
-          ))}
+          <div style={{padding:'5px 10px 3px',display:'flex',alignItems:'center',gap:8}}>
+            <span style={{flex:1,fontSize:8,fontFamily:"'Geist Mono',monospace",color:T.textDim,letterSpacing:'0.08em'}}>QUICK SELECT {'\u00B7'} TAP TO TOGGLE</span>
+            <button type="button" onMouseDown={e=>{e.preventDefault();setOpen(false);}}
+              style={{fontSize:9,color:T.textDim,background:'transparent',border:`1px solid ${T.border}`,
+                borderRadius:3,padding:'2px 7px',cursor:'pointer',fontFamily:"'Geist Mono',monospace"}}>done</button>
+          </div>
+          {presets.map((p,i)=>{
+            const sel=selectedTokens.includes(p);
+            return(
+              <button key={i} type="button" onMouseDown={e=>{e.preventDefault();togglePreset(p);}}
+                style={{display:'flex',alignItems:'center',gap:8,width:'100%',textAlign:'left',padding:'9px 13px',
+                  background:sel?T.accent+'18':'transparent',border:'none',borderBottom:`1px solid ${T.rule}`,
+                  color:sel?T.accent:T.text,fontSize:12,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>
+                <span style={{width:16,height:16,borderRadius:3,flexShrink:0,display:'grid',placeItems:'center',fontSize:10,fontWeight:600,
+                  background:sel?T.accent:T.surface2,border:`1px solid ${sel?T.accent:T.border}`,color:sel?'#0e0d0b':T.textDim}}>
+                  {sel?'\u2713':''}
+                </span>
+                <span style={{flex:1}}>{p}</span>
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
