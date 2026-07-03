@@ -82,7 +82,7 @@ const LOC_COLORS=["#7ab6c4","#d49a5c","#c4654b","#7aa37a","#c9a14a","#a07bc4"];
 ═══════════════════════════════════════════════════════════ */
 const LANGS={
   en:{
-    cabinet:"Script Breaker",newVersion:"v12.4 · iPad Print Fix",importJson:"Import JSON",
+    cabinet:"Script Breaker",newVersion:"v12.5 · Column Polish",importJson:"Import JSON",
     noProjects:"No projects yet",importFirst:"Import a JSON breakdown from Claude to get started",
     howItWorks:"How it works",
     step1t:"Analyse in Claude Project",step1d:"Upload screenplay PDF to a Claude Project. Ask Claude to output a full breakdown JSON.",
@@ -104,7 +104,7 @@ const LANGS={
     allLocations:"All locations",
   },
   zh:{
-    cabinet:"Script Breaker",newVersion:"v12.4 · iPad打印修复",importJson:"导入JSON",
+    cabinet:"Script Breaker",newVersion:"v12.5 · 栏位优化",importJson:"导入JSON",
     noProjects:"暂无项目",importFirst:"从Claude导入JSON解构文件即可开始",
     howItWorks:"使用流程",
     step1t:"在Claude Project分析剧本",step1d:"上传剧本PDF至Claude Project，让Claude输出完整解构JSON。",
@@ -126,7 +126,7 @@ const LANGS={
     allLocations:"全部地点",
   },
   ja:{
-    cabinet:"Script Breaker",newVersion:"v12.4",importJson:"JSONインポート",
+    cabinet:"Script Breaker",newVersion:"v12.5",importJson:"JSONインポート",
     noProjects:"プロジェクトなし",importFirst:"ClaudeからJSONをインポートして開始",
     howItWorks:"使い方",
     step1t:"Claudeで脚本分析",step1d:"脚本PDFをClaudeプロジェクトにアップロード。完全なJSONを出力するよう依頼。",
@@ -4188,6 +4188,7 @@ function ScenePicker({value,onChange,scenes,displayValue}){
   const [open,setOpen]=React.useState(false);
   const [fixPos,setFixPos]=React.useState({top:0,left:0,width:200});
   const wrapRef=React.useRef(null);
+  const selectedRef=React.useRef(null);
   const selected=React.useMemo(()=>
     value?(value.split(',').map(s=>s.trim()).filter(Boolean)):[]
   ,[value]);
@@ -4210,6 +4211,15 @@ function ScenePicker({value,onChange,scenes,displayValue}){
     document.addEventListener('mousedown',fn); document.addEventListener('touchstart',fn);
     return()=>{document.removeEventListener('mousedown',fn); document.removeEventListener('touchstart',fn);};
   },[open]);
+  // Jump straight to the first already-selected scene instead of always
+  // starting at the top of the (potentially long) scene list.
+  React.useEffect(()=>{
+    if(!open)return;
+    const id=requestAnimationFrame(()=>{
+      if(selectedRef.current) selectedRef.current.scrollIntoView({block:'center'});
+    });
+    return ()=>cancelAnimationFrame(id);
+  },[open]);
   return(
     <div ref={wrapRef} style={{position:'relative',width:'100%'}}>
       <div style={{display:'flex',alignItems:'center'}}>
@@ -4228,8 +4238,12 @@ function ScenePicker({value,onChange,scenes,displayValue}){
             const sel=selected.includes(s.id);
             const idx=selected.indexOf(s.id);
             const ie=sceneIntExt(s.slug);
+            // Only the FIRST selected scene gets the scroll-anchor ref
+            const isFirstSelected=sel&&idx===0;
             return(
-              <button key={s.id} type="button" onMouseDown={e=>{e.preventDefault();toggleScene(s.id);}}
+              <button key={s.id} type="button"
+                ref={isFirstSelected?selectedRef:null}
+                onMouseDown={e=>{e.preventDefault();toggleScene(s.id);}}
                 style={{display:'flex',alignItems:'center',gap:8,width:'100%',textAlign:'left',
                   padding:'8px 10px',background:sel?T.accent+'18':'transparent',
                   border:'none',borderBottom:`1px solid ${T.rule}`,
@@ -4448,6 +4462,8 @@ function LensFocalPicker({value,onChange,options,placeholder,inputStyle,align}){
   const [open,setOpen]=React.useState(false);
   const [fixPos,setFixPos]=React.useState({top:0,left:0,width:150,up:false});
   const wrapRef=React.useRef(null);
+  const listRef=React.useRef(null);
+  const selectedRef=React.useRef(null);
 
   // Use position:fixed + getBoundingClientRect so the dropdown is NEVER
   // clipped by overflow:auto/hidden on any ancestor (e.g. the table wrapper).
@@ -4476,6 +4492,19 @@ function LensFocalPicker({value,onChange,options,placeholder,inputStyle,align}){
     return ()=>{ document.removeEventListener('mousedown',onDoc); document.removeEventListener('touchstart',onDoc); };
   },[open]);
 
+  // When the dropdown opens, jump straight to the currently selected value
+  // instead of always starting at the top of the list.
+  React.useEffect(()=>{
+    if(!open)return;
+    // Wait a frame so the list has actually rendered/measured before scrolling.
+    const id=requestAnimationFrame(()=>{
+      if(selectedRef.current&&listRef.current){
+        selectedRef.current.scrollIntoView({block:'center'});
+      }
+    });
+    return ()=>cancelAnimationFrame(id);
+  },[open]);
+
   return(
     <div ref={wrapRef} style={{position:'relative',width:'100%'}}>
       <div style={{display:'flex',alignItems:'center',gap:1}}>
@@ -4488,7 +4517,7 @@ function LensFocalPicker({value,onChange,options,placeholder,inputStyle,align}){
           style={{flexShrink:0,background:'transparent',border:'none',color:T.accent,cursor:'pointer',fontSize:11,padding:'0 4px'}}>{'\u25BC'}</button>
       </div>
       {open&&(
-        <div style={{
+        <div ref={listRef} style={{
           position:'fixed',
           top: fixPos.top,
           bottom: fixPos.bottom,
@@ -4499,7 +4528,9 @@ function LensFocalPicker({value,onChange,options,placeholder,inputStyle,align}){
           background:T.panel,border:`1px solid ${T.border}`,borderRadius:7,
           boxShadow:'0 8px 24px rgba(0,0,0,0.5)'}}>
           {options.map(opt=>(
-            <button key={opt} type="button" onMouseDown={(e)=>{e.preventDefault();onChange(opt);setOpen(false);}}
+            <button key={opt} type="button"
+              ref={value===opt?selectedRef:null}
+              onMouseDown={(e)=>{e.preventDefault();onChange(opt);setOpen(false);}}
               style={{display:'block',width:'100%',textAlign:'left',padding:'10px 13px',
                 background:value===opt?T.chip:'transparent',border:'none',
                 borderBottom:`1px solid ${T.rule}`,color:T.text,fontSize:13,
@@ -5363,7 +5394,7 @@ function CameraReport(){
                 <th style={{...th,width:80,position:'sticky',top:0,left:0,zIndex:3}}>ROLL·DAY</th>
                 <th style={{...th,minWidth:90}}>SCENE</th>
                 <th style={{...th,width:36}}>SHOT</th><th style={{...th,width:42}}>TAKE</th><th style={{...th,width:34}}>T/S</th>
-                <th style={{...th,width:62}}>CLIP</th><th style={{...th,width:60}}>EI</th>
+                <th style={{...th,width:80}}>CLIP</th><th style={{...th,width:60}}>EI</th>
                 <th style={{...th,width:60}}>FOCAL</th><th style={{...th,width:50}}>STOP</th>
                 <th style={{...th,width:55}}>SHUTTER</th><th style={{...th,width:55}}>WB</th>
                 <th style={{...th,width:64}}>FILTER 1</th><th style={{...th,width:64}}>FILTER 2</th>
@@ -5403,7 +5434,7 @@ function CameraReport(){
                         <button onClick={()=>patch({tail:!t.tail})} style={{background:'transparent',border:'none',cursor:'pointer',fontSize:13}}>{t.tail?'\u2705':'\u2610'}</button>
                       </td>
                       <td style={{borderRight:`1px solid ${T.rule}`,...hl('clip')}}>
-                        <input value={t.clip||''} onChange={e=>patch({clip:e.target.value})} style={ci}/>
+                        <input value={t.clip||''} onChange={e=>patch({clip:e.target.value})} style={{...ci,textAlign:'right'}}/>
                       </td>
                       <td style={{borderRight:`1px solid ${T.rule}`,...hl('ei')}}>
                         <input value={t.ei||''} onChange={e=>patch({ei:e.target.value})} style={ci}/>
@@ -5533,10 +5564,10 @@ function CameraReport(){
 
         {/* Take table */}
         <div style={{overflowX:'auto'}}>
-          <table style={{borderCollapse:'collapse',width:'100%',minWidth:1180}}>
+          <table style={{borderCollapse:'collapse',width:'100%',minWidth:1206}}>
             <thead><tr>
               <th style={{...th,minWidth:110}}>SCENE</th><th style={{...th,width:38}}>SHOT</th><th style={{...th,width:46}}>TAKE</th><th style={{...th,width:36}}>T/S</th>
-              <th style={{...th,width:62}}>CLIP</th><th style={{...th,width:72}}>LENS</th><th style={{...th,width:65}}>FOCAL</th>
+              <th style={{...th,width:88}}>CLIP</th><th style={{...th,width:72}}>LENS</th><th style={{...th,width:65}}>FOCAL</th>
               <th style={{...th,width:46}}>STOP</th>
               <th style={{...th,width:80,whiteSpace:'normal',lineHeight:1.15}}>SHUTTER</th>
               <th style={{...th,width:50}}>EI</th><th style={{...th,width:64}}>FILTER 1</th>
@@ -5584,7 +5615,7 @@ function CameraReport(){
                   <td style={{borderRight:`1px solid ${T.rule}`,textAlign:'center'}}>
                     <button onClick={()=>patchTake(t.id,{tail:!t.tail})} title="Tail slate" style={{background:'transparent',border:'none',cursor:'pointer',fontSize:14,padding:'2px'}}>{t.tail?'\u2705':'\u2610'}</button>
                   </td>
-                  <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.clip||''} onChange={e=>patchTake(t.id,{clip:e.target.value})} style={cellInput}/></td>
+                  <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.clip||''} onChange={e=>patchTake(t.id,{clip:e.target.value})} style={{...cellInput,textAlign:'right'}}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}><LensFocalPicker value={t.lens||''} onChange={v=>patchTake(t.id,{lens:v})} options={LENS_OPTIONS} inputStyle={cellInput}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}><LensFocalPicker value={t.focal||''} onChange={v=>patchTake(t.id,{focal:v})} options={FOCAL_OPTIONS} inputStyle={cellInput}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.stop||''} onChange={e=>patchTake(t.id,{stop:e.target.value})} style={cellInput}/></td>
