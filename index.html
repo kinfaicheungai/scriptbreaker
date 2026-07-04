@@ -82,7 +82,7 @@ const LOC_COLORS=["#7ab6c4","#d49a5c","#c4654b","#7aa37a","#c9a14a","#a07bc4"];
 ═══════════════════════════════════════════════════════════ */
 const LANGS={
   en:{
-    cabinet:"Script Breaker",newVersion:"v12.7 · Report Layout Polish",importJson:"Import JSON",
+    cabinet:"Script Breaker",newVersion:"v12.8 · Column Alignment Fix",importJson:"Import JSON",
     noProjects:"No projects yet",importFirst:"Import a JSON breakdown from Claude to get started",
     howItWorks:"How it works",
     step1t:"Analyse in Claude Project",step1d:"Upload screenplay PDF to a Claude Project. Ask Claude to output a full breakdown JSON.",
@@ -104,7 +104,7 @@ const LANGS={
     allLocations:"All locations",
   },
   zh:{
-    cabinet:"Script Breaker",newVersion:"v12.7 · 报告排版优化",importJson:"导入JSON",
+    cabinet:"Script Breaker",newVersion:"v12.8 · 栏位对齐修复",importJson:"导入JSON",
     noProjects:"暂无项目",importFirst:"从Claude导入JSON解构文件即可开始",
     howItWorks:"使用流程",
     step1t:"在Claude Project分析剧本",step1d:"上传剧本PDF至Claude Project，让Claude输出完整解构JSON。",
@@ -126,7 +126,7 @@ const LANGS={
     allLocations:"全部地点",
   },
   ja:{
-    cabinet:"Script Breaker",newVersion:"v12.7",importJson:"JSONインポート",
+    cabinet:"Script Breaker",newVersion:"v12.8",importJson:"JSONインポート",
     noProjects:"プロジェクトなし",importFirst:"ClaudeからJSONをインポートして開始",
     howItWorks:"使い方",
     step1t:"Claudeで脚本分析",step1d:"脚本PDFをClaudeプロジェクトにアップロード。完全なJSONを出力するよう依頼。",
@@ -5223,7 +5223,7 @@ function CameraReport(){
       .meta div{padding:4px 8px;border-right:1px solid #ccc;}
       .meta b{color:#000;}
       table{width:100%;border-collapse:collapse;margin-top:0;font-size:10px;table-layout:fixed;}
-      th{background:#7a1f1f;color:#fff;padding:4px;text-align:left;font-size:10px;}
+      th{background:#7a1f1f;color:#fff;padding:4px;text-align:left;font-size:10px;overflow:hidden;word-wrap:break-word;line-height:1.15;vertical-align:middle;}
       td{border:1px solid #ccc;padding:3px 4px;overflow:hidden;word-wrap:break-word;vertical-align:top;}
       tr:nth-child(even) td{background:#f7f7f7;}
       .toolbar{position:fixed;top:0;left:0;right:0;background:#1a1a1a;color:#fff;padding:8px 14px;display:flex;gap:10px;align-items:center;justify-content:flex-end;box-shadow:0 2px 8px rgba(0,0,0,0.3);z-index:9999;}
@@ -5271,7 +5271,7 @@ function CameraReport(){
     </colgroup>
     <thead><tr>
       <th>SCENE</th><th>SHOT</th><th>TAKE</th><th>T/S</th><th>CLIP</th><th>LENS</th><th>FOCAL</th><th>STOP</th><th>SHUTTER</th><th>EI</th>
-      <th>FILTER 1</th><th>FILTER 2</th><th>WB</th><th>FOCUS (cm)</th><th>NOTES</th>${hasAnyPhoto?'<th>PHOTO</th>':''}
+      <th>FILTER 1</th><th>FILTER 2</th><th>WB</th><th>FOCUS<br/>(cm)</th><th>NOTES</th>${hasAnyPhoto?'<th>PHOTO</th>':''}
     </tr></thead><tbody>${rows}</tbody></table>
     </div>
     </body></html>`;
@@ -5627,7 +5627,7 @@ function CameraReport(){
               <th style={{...th,width:46}}>STOP</th>
               <th style={{...th,width:80,whiteSpace:'normal',lineHeight:1.15}}>SHUTTER</th>
               <th style={{...th,width:50}}>EI</th><th style={{...th,width:64}}>FILTER 1</th>
-              <th style={{...th,width:64}}>FILTER 1</th><th style={{...th,width:80}}>FILTER 2</th><th style={{...th,width:76}}>WB</th>
+              <th style={{...th,width:80}}>FILTER 2</th><th style={{...th,width:76}}>WB</th>
               <th style={{...th,width:46,whiteSpace:'normal',lineHeight:1.15,verticalAlign:'middle'}}>FOCUS<br/>(cm)</th>
               <th style={{...th,minWidth:180}}>NOTES</th><th style={{...th,width:44}}>{'\uD83D\uDCF7'}</th><th style={{...th,width:78}}></th>
             </tr></thead>
