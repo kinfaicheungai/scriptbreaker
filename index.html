@@ -82,7 +82,7 @@ const LOC_COLORS=["#7ab6c4","#d49a5c","#c4654b","#7aa37a","#c9a14a","#a07bc4"];
 ═══════════════════════════════════════════════════════════ */
 const LANGS={
   en:{
-    cabinet:"Script Breaker",newVersion:"v12.10 · Required Field Hints",importJson:"Import JSON",
+    cabinet:"Script Breaker",newVersion:"v12.11 · Stop Presets",importJson:"Import JSON",
     noProjects:"No projects yet",importFirst:"Import a JSON breakdown from Claude to get started",
     howItWorks:"How it works",
     step1t:"Analyse in Claude Project",step1d:"Upload screenplay PDF to a Claude Project. Ask Claude to output a full breakdown JSON.",
@@ -104,7 +104,7 @@ const LANGS={
     allLocations:"All locations",
   },
   zh:{
-    cabinet:"Script Breaker",newVersion:"v12.10 · 必填栏位提示",importJson:"导入JSON",
+    cabinet:"Script Breaker",newVersion:"v12.11 · 光圈预设",importJson:"导入JSON",
     noProjects:"暂无项目",importFirst:"从Claude导入JSON解构文件即可开始",
     howItWorks:"使用流程",
     step1t:"在Claude Project分析剧本",step1d:"上传剧本PDF至Claude Project，让Claude输出完整解构JSON。",
@@ -126,7 +126,7 @@ const LANGS={
     allLocations:"全部地点",
   },
   ja:{
-    cabinet:"Script Breaker",newVersion:"v12.10",importJson:"JSONインポート",
+    cabinet:"Script Breaker",newVersion:"v12.11",importJson:"JSONインポート",
     noProjects:"プロジェクトなし",importFirst:"ClaudeからJSONをインポートして開始",
     howItWorks:"使い方",
     step1t:"Claudeで脚本分析",step1d:"脚本PDFをClaudeプロジェクトにアップロード。完全なJSONを出力するよう依頼。",
@@ -4147,6 +4147,7 @@ function AIFillModal({roll, projId, scenes, onApply, onClose}){
 
 const SB_NOTE_PRESETS_KEY='sb_camrep_note_presets';
 const SB_FOCAL_PRESETS_KEY='sb_camrep_focal_presets';
+const SB_STOP_PRESETS_KEY='sb_camrep_stop_presets';
 
 /* Format a date string "YYYY-MM-DD" into "Wed, 1 Jul 2026".
    Falls back to the raw string if it can't be parsed. */
@@ -4508,6 +4509,51 @@ function SearchInputAC({value,onChange,suggestions,placeholder}){
   );
 }
 
+/* ═══ StopPresetsModal — manage T-stop dropdown options ═══ */
+function StopPresetsModal({onClose,onSaved,defaults}){
+  const [items,setItems]=React.useState(()=>{
+    try{const v=JSON.parse(localStorage.getItem(SB_STOP_PRESETS_KEY)||'null');return (Array.isArray(v)&&v.length)?v:(defaults||[]);}catch{return defaults||[];}
+  });
+  const [draft,setDraft]=React.useState('');
+  function save(next){setItems(next);localStorage.setItem(SB_STOP_PRESETS_KEY,JSON.stringify(next));onSaved&&onSaved(next);}
+  function add(){let v=draft.trim();if(!v)return;if(/^\d+(\.\d+)?$/.test(v))v='T'+v;if(items.includes(v))return;save([...items,v]);setDraft('');}
+  function remove(i){save(items.filter((_,idx)=>idx!==i));}
+  function moveUp(i){if(i===0)return;const n=[...items];[n[i-1],n[i]]=[n[i],n[i-1]];save(n);}
+  function resetDefaults(){if(confirm('Reset stop list to defaults?'))save(defaults||[]);}
+  return(
+    <div style={{position:'fixed',inset:0,zIndex:9999,background:'rgba(0,0,0,0.72)',
+      display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
+      <div style={{background:T.panel,border:`1px solid ${T.border}`,borderRadius:10,
+        width:'100%',maxWidth:360,maxHeight:'78vh',overflow:'auto',
+        boxShadow:'0 16px 48px rgba(0,0,0,0.6)',display:'flex',flexDirection:'column'}}>
+        <div style={{padding:'12px 16px',borderBottom:`1px solid ${T.rule}`,display:'flex',alignItems:'center',gap:8}}>
+          <span style={{fontSize:13,fontWeight:600,color:T.text,flex:1}}>T-Stop Presets</span>
+          <button onClick={resetDefaults} style={{fontSize:9,color:T.textDim,background:'transparent',border:`1px solid ${T.border}`,borderRadius:4,padding:'3px 7px',cursor:'pointer',fontFamily:"'Geist Mono',monospace"}}>reset</button>
+          <button onClick={onClose} style={{background:'transparent',border:'none',color:T.textDim,fontSize:18,cursor:'pointer',lineHeight:1}}>{'\u00D7'}</button>
+        </div>
+        <div style={{padding:14,flex:1,overflow:'auto'}}>
+          <div style={{display:'flex',gap:6,marginBottom:12}}>
+            <input value={draft} onChange={e=>setDraft(e.target.value)}
+              onKeyDown={e=>e.key==='Enter'&&add()} placeholder="e.g. T2.8 or 2.8"
+              style={{flex:1,background:T.surface2,border:`1px solid ${T.border}`,borderRadius:5,
+                padding:'7px 10px',fontSize:12,color:T.text,fontFamily:"'Geist Mono',monospace"}}/>
+            <button onClick={add} style={{padding:'7px 14px',borderRadius:5,background:T.accent,
+              border:'none',color:'#0e0d0b',fontWeight:600,fontSize:12,cursor:'pointer'}}>Add</button>
+          </div>
+          {items.length===0&&<div style={{fontSize:11,color:T.textDim,fontStyle:'italic'}}>No stops.</div>}
+          {items.map((p,i)=>(
+            <div key={i} style={{display:'flex',alignItems:'center',gap:6,padding:'6px 0',borderBottom:`1px solid ${T.rule}`}}>
+              <span style={{flex:1,fontSize:12,color:T.text,fontFamily:"'Geist Mono',monospace"}}>{p}</span>
+              {i>0&&<button onClick={()=>moveUp(i)} style={{background:'transparent',border:`1px solid ${T.border}`,borderRadius:4,color:T.textDim,fontSize:11,padding:'2px 7px',cursor:'pointer'}}>{'\u2191'}</button>}
+              <button onClick={()=>remove(i)} style={{background:'transparent',border:`1px solid ${T.danger}44`,borderRadius:4,color:T.danger,fontSize:11,padding:'2px 7px',cursor:'pointer'}}>del</button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function LensFocalPicker({value,onChange,options,placeholder,inputStyle,align}){
   const [open,setOpen]=React.useState(false);
   const [fixPos,setFixPos]=React.useState({top:0,left:0,width:150,up:false});
@@ -4779,6 +4825,13 @@ function CameraReport(){
   });
   const FOCAL_OPTIONS=focalOptions;
   const [showFocalPresets,setShowFocalPresets]=React.useState(false);
+  // Full 1/3-stop standard T-stop scale
+  const DEFAULT_STOP=['T1.4','T2','T2.2','T2.5','T2.8','T3.2','T3.5','T4','T4.5','T5.6','T6.3','T7.1','T8','T9','T11','T13','T16','T22'];
+  const [stopOptions,setStopOptions]=React.useState(()=>{
+    try{const v=JSON.parse(localStorage.getItem(SB_STOP_PRESETS_KEY)||'null');return (Array.isArray(v)&&v.length)?v:DEFAULT_STOP;}catch{return DEFAULT_STOP;}
+  });
+  const STOP_OPTIONS=stopOptions;
+  const [showStopPresets,setShowStopPresets]=React.useState(false);
 
   const [rolls,setRolls]=React.useState([]);     // [{id, roll, mag, date, shootDay, location, camera, codec, fps, shutter, baseEI, lut, lens, takes:[]}]
   const [activeRoll,setActiveRoll]=React.useState(null);
@@ -5372,6 +5425,11 @@ function CameraReport(){
             background:'transparent',border:`1px solid ${T.border}`,color:T.textDim,cursor:'pointer'}}>
           {'\u2699\uFE0F'} Focal
         </button>
+        <button onClick={()=>setShowStopPresets(true)} title="Manage T-stop presets"
+          style={{padding:'4px 10px',borderRadius:5,fontSize:10,fontFamily:"'Geist Mono',monospace",
+            background:'transparent',border:`1px solid ${T.border}`,color:T.textDim,cursor:'pointer'}}>
+          {'\u2699\uFE0F'} Stop
+        </button>
         {roll&&<button onClick={exportCSV} style={{padding:'4px 10px',borderRadius:5,fontSize:10,fontFamily:"'Geist Mono',monospace",background:'transparent',border:`1px solid ${T.border}`,color:T.textMute,cursor:'pointer'}}>CSV</button>}
         {roll&&<button disabled={exporting} onClick={async()=>{ setExporting(true); try{ await exportReport(); }finally{ setExporting(false); } }} style={{padding:'4px 10px',borderRadius:5,fontSize:10,fontFamily:"'Geist Mono',monospace",background:T.accent+'18',border:`1px solid ${T.accent}44`,color:T.accent,cursor:exporting?'default':'pointer',opacity:exporting?0.6:1}}>{exporting?'Preparing...':<>{'\uD83D\uDDA8'} Print / PDF</>}</button>}
         <button onClick={addRoll} style={{padding:'4px 12px',borderRadius:5,fontSize:11,fontFamily:"'Geist Mono',monospace",background:T.accent,border:'none',color:'#0e0d0b',fontWeight:600,cursor:'pointer'}}>+ New Roll</button>
@@ -5636,11 +5694,11 @@ function CameraReport(){
 
         {/* Take table */}
         <div style={{overflowX:'auto'}}>
-          <table style={{borderCollapse:'collapse',width:'100%',minWidth:1222}}>
+          <table style={{borderCollapse:'collapse',width:'100%',minWidth:1242}}>
             <thead><tr>
               <th style={{...th,minWidth:110}}>SCENE</th><th style={{...th,width:38}}>SHOT</th><th style={{...th,width:46}}>TAKE</th><th style={{...th,width:36}}>T/S</th>
               <th style={{...th,width:88}}>CLIP</th><th style={{...th,width:72}}>LENS</th><th style={{...th,width:65}}>FOCAL</th>
-              <th style={{...th,width:46}}>STOP</th>
+              <th style={{...th,width:66}}>STOP</th>
               <th style={{...th,width:80,whiteSpace:'normal',lineHeight:1.15}}>SHUTTER</th>
               <th style={{...th,width:50}}>EI</th><th style={{...th,width:64}}>FILTER 1</th>
               <th style={{...th,width:80}}>FILTER 2</th><th style={{...th,width:76}}>WB</th>
@@ -5696,7 +5754,7 @@ function CameraReport(){
                   <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.clip||''} onChange={e=>patchTake(t.id,{clip:e.target.value})} style={{...cellInput,textAlign:'right'}}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}><LensFocalPicker value={t.lens||''} onChange={v=>patchTake(t.id,{lens:v})} options={LENS_OPTIONS} inputStyle={cellInput}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`,...(needFocal?reqStyle:{})}}><LensFocalPicker value={t.focal||''} onChange={v=>patchTake(t.id,{focal:v})} options={FOCAL_OPTIONS} inputStyle={cellInput}/></td>
-                  <td style={{borderRight:`1px solid ${T.rule}`,...(needStop?reqStyle:{})}}><input value={t.stop||''} onChange={e=>patchTake(t.id,{stop:e.target.value})} style={cellInput}/></td>
+                  <td style={{borderRight:`1px solid ${T.rule}`,...(needStop?reqStyle:{})}}><LensFocalPicker value={t.stop||''} onChange={v=>patchTake(t.id,{stop:v})} options={STOP_OPTIONS} inputStyle={cellInput}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}><LensFocalPicker value={t.shutter||''} onChange={v=>patchTake(t.id,{shutter:v})} options={SHUTTER_OPTIONS} placeholder={roll.shutter||''} inputStyle={{...cellInput,textAlign:'center'}}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.ei||''} onChange={e=>patchTake(t.id,{ei:e.target.value})} style={cellInput}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.intFilters||''} onChange={e=>patchTake(t.id,{intFilters:e.target.value})} style={cellInput}/></td>
@@ -5749,6 +5807,7 @@ function CameraReport(){
       )}
       {showNotePresets&&<NotePresetsModal onClose={()=>setShowNotePresets(false)}/>}
       {showFocalPresets&&<FocalPresetsModal onClose={()=>setShowFocalPresets(false)} onSaved={setFocalOptions} defaults={DEFAULT_FOCAL}/>}
+      {showStopPresets&&<StopPresetsModal onClose={()=>setShowStopPresets(false)} onSaved={setStopOptions} defaults={DEFAULT_STOP}/>}
     </div>
   );
 }
