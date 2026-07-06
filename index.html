@@ -82,7 +82,7 @@ const LOC_COLORS=["#7ab6c4","#d49a5c","#c4654b","#7aa37a","#c9a14a","#a07bc4"];
 ═══════════════════════════════════════════════════════════ */
 const LANGS={
   en:{
-    cabinet:"Script Breaker",newVersion:"v12.9 · Clips Count & Date Format",importJson:"Import JSON",
+    cabinet:"Script Breaker",newVersion:"v12.10 · Required Field Hints",importJson:"Import JSON",
     noProjects:"No projects yet",importFirst:"Import a JSON breakdown from Claude to get started",
     howItWorks:"How it works",
     step1t:"Analyse in Claude Project",step1d:"Upload screenplay PDF to a Claude Project. Ask Claude to output a full breakdown JSON.",
@@ -104,7 +104,7 @@ const LANGS={
     allLocations:"All locations",
   },
   zh:{
-    cabinet:"Script Breaker",newVersion:"v12.9 · 文件数与日期格式",importJson:"导入JSON",
+    cabinet:"Script Breaker",newVersion:"v12.10 · 必填栏位提示",importJson:"导入JSON",
     noProjects:"暂无项目",importFirst:"从Claude导入JSON解构文件即可开始",
     howItWorks:"使用流程",
     step1t:"在Claude Project分析剧本",step1d:"上传剧本PDF至Claude Project，让Claude输出完整解构JSON。",
@@ -126,7 +126,7 @@ const LANGS={
     allLocations:"全部地点",
   },
   ja:{
-    cabinet:"Script Breaker",newVersion:"v12.9",importJson:"JSONインポート",
+    cabinet:"Script Breaker",newVersion:"v12.10",importJson:"JSONインポート",
     noProjects:"プロジェクトなし",importFirst:"ClaudeからJSONをインポートして開始",
     howItWorks:"使い方",
     step1t:"Claudeで脚本分析",step1d:"脚本PDFをClaudeプロジェクトにアップロード。完全なJSONを出力するよう依頼。",
@@ -5652,6 +5652,12 @@ function CameraReport(){
                 const prev=i>0?roll.takes[i-1]:null;
                 // Bold divider when this row starts a new shot or new scene
                 const newGroup=prev&&((prev.shot||'')!==(t.shot||'')||(prev.scene||'')!==(t.scene||''));
+                // A row that has a scene number should have focal + stop filled;
+                // flag empties in red as a reminder.
+                const hasScene=!!String(t.scene||'').trim();
+                const needFocal=hasScene&&!String(t.focal||'').trim();
+                const needStop=hasScene&&!String(t.stop||'').trim();
+                const reqStyle={background:'rgba(229,72,77,0.16)',boxShadow:'inset 0 0 0 1.5px #e5484d'};
                 return(
                 <tr key={t.id} style={{borderBottom:`1px solid ${T.rule}`,
                   borderTop:newGroup?`2px solid ${T.accent}66`:'none',
@@ -5689,8 +5695,8 @@ function CameraReport(){
                   </td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.clip||''} onChange={e=>patchTake(t.id,{clip:e.target.value})} style={{...cellInput,textAlign:'right'}}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}><LensFocalPicker value={t.lens||''} onChange={v=>patchTake(t.id,{lens:v})} options={LENS_OPTIONS} inputStyle={cellInput}/></td>
-                  <td style={{borderRight:`1px solid ${T.rule}`}}><LensFocalPicker value={t.focal||''} onChange={v=>patchTake(t.id,{focal:v})} options={FOCAL_OPTIONS} inputStyle={cellInput}/></td>
-                  <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.stop||''} onChange={e=>patchTake(t.id,{stop:e.target.value})} style={cellInput}/></td>
+                  <td style={{borderRight:`1px solid ${T.rule}`,...(needFocal?reqStyle:{})}}><LensFocalPicker value={t.focal||''} onChange={v=>patchTake(t.id,{focal:v})} options={FOCAL_OPTIONS} inputStyle={cellInput}/></td>
+                  <td style={{borderRight:`1px solid ${T.rule}`,...(needStop?reqStyle:{})}}><input value={t.stop||''} onChange={e=>patchTake(t.id,{stop:e.target.value})} style={cellInput}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}><LensFocalPicker value={t.shutter||''} onChange={v=>patchTake(t.id,{shutter:v})} options={SHUTTER_OPTIONS} placeholder={roll.shutter||''} inputStyle={{...cellInput,textAlign:'center'}}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.ei||''} onChange={e=>patchTake(t.id,{ei:e.target.value})} style={cellInput}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.intFilters||''} onChange={e=>patchTake(t.id,{intFilters:e.target.value})} style={cellInput}/></td>
