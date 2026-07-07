@@ -82,7 +82,7 @@ const LOC_COLORS=["#7ab6c4","#d49a5c","#c4654b","#7aa37a","#c9a14a","#a07bc4"];
 ═══════════════════════════════════════════════════════════ */
 const LANGS={
   en:{
-    cabinet:"Script Breaker",newVersion:"v12.11 · Stop Presets",importJson:"Import JSON",
+    cabinet:"Script Breaker",newVersion:"v12.12 · Multi-Camera",importJson:"Import JSON",
     noProjects:"No projects yet",importFirst:"Import a JSON breakdown from Claude to get started",
     howItWorks:"How it works",
     step1t:"Analyse in Claude Project",step1d:"Upload screenplay PDF to a Claude Project. Ask Claude to output a full breakdown JSON.",
@@ -104,7 +104,7 @@ const LANGS={
     allLocations:"All locations",
   },
   zh:{
-    cabinet:"Script Breaker",newVersion:"v12.11 · 光圈预设",importJson:"导入JSON",
+    cabinet:"Script Breaker",newVersion:"v12.12 · 多机位",importJson:"导入JSON",
     noProjects:"暂无项目",importFirst:"从Claude导入JSON解构文件即可开始",
     howItWorks:"使用流程",
     step1t:"在Claude Project分析剧本",step1d:"上传剧本PDF至Claude Project，让Claude输出完整解构JSON。",
@@ -126,7 +126,7 @@ const LANGS={
     allLocations:"全部地点",
   },
   ja:{
-    cabinet:"Script Breaker",newVersion:"v12.11",importJson:"JSONインポート",
+    cabinet:"Script Breaker",newVersion:"v12.12",importJson:"JSONインポート",
     noProjects:"プロジェクトなし",importFirst:"ClaudeからJSONをインポートして開始",
     howItWorks:"使い方",
     step1t:"Claudeで脚本分析",step1d:"脚本PDFをClaudeプロジェクトにアップロード。完全なJSONを出力するよう依頼。",
@@ -4149,6 +4149,18 @@ const SB_NOTE_PRESETS_KEY='sb_camrep_note_presets';
 const SB_FOCAL_PRESETS_KEY='sb_camrep_focal_presets';
 const SB_STOP_PRESETS_KEY='sb_camrep_stop_presets';
 
+/* Multi-camera config: each camera letter has a distinct header colour so
+   the user can tell at a glance which camera's report they're editing. */
+const CAM_CONFIG={
+  A:{label:'A', header:'#7a1f1f', accent:'#e5484d', tint:'rgba(229,72,77,0.14)'},   // red
+  B:{label:'B', header:'#1e3a6b', accent:'#4d8ee5', tint:'rgba(77,142,229,0.14)'},  // blue
+  C:{label:'C', header:'#1f5f3a', accent:'#3ec17a', tint:'rgba(62,193,122,0.14)'},  // green
+  D:{label:'D', header:'#7a4a1f', accent:'#e5934d', tint:'rgba(229,147,77,0.14)'},  // orange
+};
+const CAM_ORDER=['A','B','C','D'];
+function camOf(roll){ return (roll&&roll.cam)||'A'; }
+
+
 /* Format a date string "YYYY-MM-DD" into "Wed, 1 Jul 2026".
    Falls back to the raw string if it can't be parsed. */
 function fmtDayDate(dateStr){
@@ -4833,8 +4845,11 @@ function CameraReport(){
   const STOP_OPTIONS=stopOptions;
   const [showStopPresets,setShowStopPresets]=React.useState(false);
 
-  const [rolls,setRolls]=React.useState([]);     // [{id, roll, mag, date, shootDay, location, camera, codec, fps, shutter, baseEI, lut, lens, takes:[]}]
+  const [rolls,setRolls]=React.useState([]);     // [{id, roll, cam, mag, date, shootDay, ...takes}]
   const [activeRoll,setActiveRoll]=React.useState(null);
+  const [activeCam,setActiveCam]=React.useState('A');   // which camera's rolls are shown
+  const [syncCams,setSyncCams]=React.useState(false);   // add takes to all cams at once
+  const [camActiveRoll,setCamActiveRoll]=React.useState({}); // cam -> last selected roll id
   const [syncStatus,setSyncStatus]=React.useState('offline');
   const [exporting,setExporting]=React.useState(false);
   const [showAIFill,setShowAIFill]=React.useState(false);
@@ -4893,22 +4908,32 @@ function CameraReport(){
     }catch(e){ setSyncStatus('offline'); }
   };
 
-  function nextRollNo(){
-    // find highest A0xx and +1
+  function nextRollNo(cam){
+    // Roll numbers are per-camera and prefixed with the camera letter:
+    // A cam -> A001, A002 ...; B cam -> B001 ...
+    const c=cam||activeCam||'A';
     let max=0;
-    rolls.forEach(r=>{const m=(r.roll||'').match(/(\d+)/);if(m){const n=parseInt(m[1],10);if(n>max)max=n;}});
-    return 'A'+String(max+1).padStart(3,'0');
+    rolls.filter(r=>camOf(r)===c).forEach(r=>{const m=(r.roll||'').match(/(\d+)/);if(m){const n=parseInt(m[1],10);if(n>max)max=n;}});
+    return c+String(max+1).padStart(3,'0');
   }
 
-  function addRoll(){
+  function addRoll(cam){
+    const c=cam||activeCam||'A';
     const id='roll'+Date.now();
     const today=new Date().toISOString().slice(0,10);
-    const newRoll={id, roll:nextRollNo(), mag:'', date:today, shootDay:shootDays[0]?.day||'', location:'',
+    const newRoll={id, roll:nextRollNo(c), cam:c, mag:'', date:today, shootDay:shootDays[0]?.day||'', location:'',
       director:DEFAULTS.director, dop:DEFAULTS.dop, ac:DEFAULTS.ac,
       camera:DEFAULTS.camera, codec:DEFAULTS.codec, fps:DEFAULTS.fps, shutter:DEFAULTS.shutter,
       baseEI:DEFAULTS.baseEI, lut:DEFAULTS.lut, lens:LENS_OPTIONS[0], takes:[]};
     const updated=[newRoll,...rolls];
-    setRolls(updated); setActiveRoll(id); saveRolls(updated);
+    setRolls(updated); setActiveCam(c); setActiveRoll(id); saveRolls(updated);
+  }
+
+  // Add the next camera (B, then C, then D) with an initial empty roll.
+  function addCamera(){
+    const next=CAM_ORDER.find(c=>!existingCams.includes(c));
+    if(!next){ alert('All cameras (A-D) already exist.'); return; }
+    addRoll(next); // creates e.g. B001 and switches to it
   }
 
   function patchRoll(id,obj){
@@ -4923,6 +4948,35 @@ function CameraReport(){
     if(activeRoll===id)setActiveRoll(updated[0]?.id||null);
     saveRolls(updated);
   }
+
+  // Which cameras actually have rolls (always include A). Ordered A,B,C,D.
+  const existingCams=React.useMemo(()=>{
+    const set=new Set(['A']);
+    rolls.forEach(r=>set.add(camOf(r)));
+    return CAM_ORDER.filter(c=>set.has(c));
+  },[rolls]);
+  // Rolls belonging to the currently-selected camera.
+  const camRolls=React.useMemo(()=>rolls.filter(r=>camOf(r)===activeCam),[rolls,activeCam]);
+  const CAM=CAM_CONFIG[activeCam]||CAM_CONFIG.A;
+
+  // When the active camera changes (or its roll set changes), make sure the
+  // selected roll actually belongs to that camera; otherwise pick its first.
+  React.useEffect(()=>{
+    if(camRolls.length===0)return;
+    if(!camRolls.some(r=>r.id===activeRoll)){
+      // Prefer the roll we last used for this camera, else its first roll.
+      const remembered=camActiveRoll[activeCam];
+      const target=(remembered&&camRolls.some(r=>r.id===remembered))?remembered:camRolls[0].id;
+      setActiveRoll(target);
+    }
+  },[activeCam,camRolls,activeRoll,camActiveRoll]);
+
+  // Remember which roll is active for the current camera (for sync-add + return).
+  React.useEffect(()=>{
+    if(roll&&activeRoll){
+      setCamActiveRoll(prev=>prev[activeCam]===activeRoll?prev:{...prev,[activeCam]:activeRoll});
+    }
+  },[activeRoll,activeCam]); // eslint-disable-line
 
   const roll=rolls.find(r=>r.id===activeRoll);
   // Shot letters A, B, C ... AA, AB ...
@@ -4977,43 +5031,102 @@ function CameraReport(){
     return prefix+String(max+1).padStart(digLen,'0');
   }
 
-  // + Add take: same scene + same shot as last row, take accumulates, clip auto-increments.
-  function addTake(){
-    if(!roll)return;
-    const last=roll.takes[roll.takes.length-1]||{};
-    const scene=last.scene||(scenes[0]?.id||'');
-    const shot=last.shot||'/';
-    const t={id:'tk'+Date.now(),
-      scene:scene, shot:shot, take:takeNoFor(scene,shot)+'', tail:false, clip:nextClipNumber(),
-      lens:roll.lens||'', focal:last.focal||'', stop:last.stop||'', shutter:last.shutter||roll.shutter||'', ei:roll.baseEI||'', intFilters:last.intFilters||'Hollywood BM', filters:last.filters||'',
+  // Per-roll helpers (operate on a specific roll object, not just the active one)
+  // so we can add synchronised takes across multiple cameras at once.
+  function nextClipNumberFor(rk){
+    if(!rk||rk.takes.length===0)return '';
+    let max=-1,prefix='',digLen=3;
+    rk.takes.forEach(t=>{
+      const m=(t.clip||'').match(/^(.*?)(\d+)$/);
+      if(m){ const n=parseInt(m[2],10); if(n>max){ max=n; prefix=m[1]; digLen=m[2].length; } }
+    });
+    if(max<0)return '';
+    return prefix+String(max+1).padStart(digLen,'0');
+  }
+  function nextShotForSceneIn(rk,sceneId){
+    let maxIdx=-2;
+    rk.takes.forEach(t=>{
+      if(t.scene===sceneId){
+        const idx=(!t.shot||t.shot==='/')?-1:letterToIndex(t.shot);
+        if(idx>maxIdx)maxIdx=idx;
+      }
+    });
+    if(maxIdx===-2)return '/';
+    if(maxIdx===-1)return 'A';
+    return indexToLetter(maxIdx+1);
+  }
+  function takeNoForIn(rk,sceneId,shot){
+    let max=0;
+    rk.takes.forEach(t=>{
+      if(t.scene===sceneId&&(t.shot||'/')===(shot||'/')){ const n=parseInt(t.take,10)||0; if(n>max)max=n; }
+    });
+    return max+1;
+  }
+  // Build a new take row for a given roll. mode: 'take' | 'shot' | 'scene'.
+  // When a reference scene/shot is provided (from the primary camera), the
+  // synced cameras use the SAME scene/shot/take so slates line up; only the
+  // clip stays per-roll.
+  function buildTake(rk,mode,ref){
+    const last=rk.takes[rk.takes.length-1]||{};
+    let scene,shot,take;
+    if(ref){
+      scene=ref.scene; shot=ref.shot; take=ref.take;
+    }else if(mode==='scene'){
+      scene=''; shot='/'; take='1';
+    }else if(mode==='shot'){
+      scene=last.scene||(scenes[0]?.id||'');
+      shot=nextShotForSceneIn(rk,scene); take='1';
+    }else{ // take
+      scene=last.scene||(scenes[0]?.id||'');
+      shot=last.shot||'/'; take=takeNoForIn(rk,scene,shot)+'';
+    }
+    return {id:'tk'+Date.now()+Math.floor(Math.random()*1000),
+      scene, shot, take, tail:false, clip:nextClipNumberFor(rk),
+      lens:rk.lens||'', focal:last.focal||'', stop:last.stop||'',
+      shutter:last.shutter||rk.shutter||'', ei:rk.baseEI||'',
+      intFilters:last.intFilters||'Hollywood BM', filters:last.filters||'',
       wb:last.wb||'', focus:'', notes:'', photoIds:[], cloudMap:{}};
-    patchRoll(roll.id,{takes:[...roll.takes,t]});
   }
 
-  // + New shot: same scene as last row, shot advances (/ -> A -> B ...), take resets to 1.
-  function addShot(){
-    if(!roll)return;
-    const last=roll.takes[roll.takes.length-1]||{};
-    const scene=last.scene||(scenes[0]?.id||'');
-    const shot=nextShotForScene(scene);
-    const t={id:'tk'+Date.now(),
-      scene:scene, shot:shot, take:'1', tail:false, clip:nextClipNumber(),
-      lens:roll.lens||'', focal:last.focal||'', stop:last.stop||'', shutter:last.shutter||roll.shutter||'', ei:roll.baseEI||'', intFilters:last.intFilters||'Hollywood BM', filters:last.filters||'',
-      wb:last.wb||'', focus:'', notes:'', photoIds:[], cloudMap:{}};
-    patchRoll(roll.id,{takes:[...roll.takes,t]});
+  // Resolve each camera's target roll for a sync-add: the last roll used for
+  // that camera, or its first roll. Returns [{roll}] for all cams that have one.
+  function syncTargetRolls(){
+    const targets=[];
+    existingCams.forEach(c=>{
+      const cr=rolls.filter(r=>camOf(r)===c);
+      if(cr.length===0)return;
+      const remembered=camActiveRoll[c];
+      const rk=(remembered&&cr.find(r=>r.id===remembered))||cr[0];
+      targets.push(rk);
+    });
+    return targets;
   }
 
-  // + New scene: a fresh blank row. Scene is left empty for the user to pick,
-  // shot starts at "/" (US convention) and take at 1. Technical params carry over.
-  function addNewScene(){
+  // Core add: applies to the active roll, or (when syncing) to every camera's
+  // current roll. The active/primary roll determines the shared scene/shot/take.
+  function doAdd(mode){
     if(!roll)return;
-    const last=roll.takes[roll.takes.length-1]||{};
-    const t={id:'tk'+Date.now(),
-      scene:'', shot:'/', take:'1', tail:false, clip:nextClipNumber(),
-      lens:roll.lens||'', focal:last.focal||'', stop:last.stop||'', shutter:last.shutter||roll.shutter||'', ei:roll.baseEI||'', intFilters:last.intFilters||'Hollywood BM', filters:last.filters||'',
-      wb:last.wb||'', focus:'', notes:'', photoIds:[], cloudMap:{}};
-    patchRoll(roll.id,{takes:[...roll.takes,t]});
+    if(syncCams&&existingCams.length>1){
+      const primaryTake=buildTake(roll,mode,null);
+      const ref={scene:primaryTake.scene,shot:primaryTake.shot,take:primaryTake.take};
+      const targets=syncTargetRolls();
+      const updated=rolls.map(r=>{
+        const tgt=targets.find(t=>t.id===r.id);
+        if(!tgt)return r;
+        const isPrimary=r.id===roll.id;
+        const nt=isPrimary?primaryTake:buildTake(r,mode,ref);
+        return {...r,takes:[...r.takes,nt]};
+      });
+      setRolls(updated); saveRolls(updated);
+    }else{
+      const nt=buildTake(roll,mode,null);
+      patchRoll(roll.id,{takes:[...roll.takes,nt]});
+    }
   }
+
+  function addTake(){ doAdd('take'); }
+  function addShot(){ doAdd('shot'); }
+  function addNewScene(){ doAdd('scene'); }
 
   // Cross-roll search ─────────────────────────────────────────
   const SEARCH_FIELDS=[
@@ -5250,6 +5363,10 @@ function CameraReport(){
     const dayD=shootDays.find(d=>d.day===roll.shootDay);
     const rawDate=roll.date||(dayD&&dayD.date)||'';
     const dateStr=fmtDayDate(rawDate);
+    const camCfg=CAM_CONFIG[camOf(roll)]||CAM_CONFIG.A;
+    const camHeaderColor=camCfg.header;
+    // Light tint of the camera accent for the corner roll tag.
+    const camRollTag={A:'#f3b0b0',B:'#b0c8f3',C:'#b0f3c8',D:'#f3d4b0'}[camOf(roll)]||'#f3b0b0';
     const fcm=(v)=>{v=(v==null?'':String(v)).trim();if(!v)return '';return /^[\d.]+$/.test(v)?v+'cm':v;};
 
     const hasAnyPhoto=roll.takes.some(t=>(t.photoIds||[]).length>0);
@@ -5285,13 +5402,13 @@ function CameraReport(){
       body{font-family:Arial,Helvetica,sans-serif;margin:18px;color:#111;}
       .hdr{background:#1a1a1a;color:#fff;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;}
       .hdr .title{font-size:24px;font-weight:bold;letter-spacing:2px;text-align:center;flex:1;}
-      .hdr .roll{background:#f3b0b0;color:#111;font-weight:bold;font-size:20px;padding:4px 14px;border-radius:3px;}
+      .hdr .roll{background:${camRollTag};color:#111;font-weight:bold;font-size:20px;padding:4px 14px;border-radius:3px;}
       .crew{font-size:10px;line-height:1.5;}
       .meta{display:flex;flex-wrap:wrap;border:1px solid #000;border-top:none;font-size:11px;}
       .meta div{padding:4px 8px;border-right:1px solid #ccc;}
       .meta b{color:#000;}
       table{width:100%;border-collapse:collapse;margin-top:0;font-size:10px;table-layout:fixed;}
-      th{background:#7a1f1f;color:#fff;padding:4px;text-align:left;font-size:10px;overflow:hidden;word-wrap:break-word;line-height:1.15;vertical-align:middle;}
+      th{background:${camHeaderColor};color:#fff;padding:4px;text-align:left;font-size:10px;overflow:hidden;word-wrap:break-word;line-height:1.15;vertical-align:middle;}
       td{border:1px solid #ccc;padding:3px 4px;overflow:hidden;word-wrap:break-word;vertical-align:top;}
       tr:nth-child(even) td{background:#f7f7f7;}
       .toolbar{position:fixed;top:0;left:0;right:0;background:#1a1a1a;color:#fff;padding:8px 14px;display:flex;gap:10px;align-items:center;justify-content:flex-end;box-shadow:0 2px 8px rgba(0,0,0,0.3);z-index:9999;}
@@ -5390,7 +5507,7 @@ function CameraReport(){
   const metaInput={background:T.surface2,border:'1px solid '+T.border,borderRadius:4,padding:'3px 5px',fontSize:10,color:T.text,fontFamily:"'Geist Mono',monospace",width:'100%'};
   const metaLabel={fontSize:7,fontFamily:"'Geist Mono',monospace",letterSpacing:'0.06em',color:T.textDim,marginBottom:1,display:'block'};
   const cellInput={background:'transparent',border:'none',padding:'8px 6px',fontSize:12,color:T.text,width:'100%',fontFamily:"'Geist Mono',monospace"};
-  const th={padding:'6px 5px',background:T.accent2||'#7a1f1f',color:'#fff',fontSize:9,fontFamily:"'Geist Mono',monospace",letterSpacing:'0.05em',textAlign:'left',whiteSpace:'nowrap',position:'sticky',top:0,zIndex:2};
+  const th={padding:'6px 5px',background:CAM.header,color:'#fff',fontSize:9,fontFamily:"'Geist Mono',monospace",letterSpacing:'0.05em',textAlign:'left',whiteSpace:'nowrap',position:'sticky',top:0,zIndex:2};
 
   return(
     <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden',border:`1px solid ${T.border}`,borderTop:'none',background:T.panel}}>
@@ -5432,7 +5549,7 @@ function CameraReport(){
         </button>
         {roll&&<button onClick={exportCSV} style={{padding:'4px 10px',borderRadius:5,fontSize:10,fontFamily:"'Geist Mono',monospace",background:'transparent',border:`1px solid ${T.border}`,color:T.textMute,cursor:'pointer'}}>CSV</button>}
         {roll&&<button disabled={exporting} onClick={async()=>{ setExporting(true); try{ await exportReport(); }finally{ setExporting(false); } }} style={{padding:'4px 10px',borderRadius:5,fontSize:10,fontFamily:"'Geist Mono',monospace",background:T.accent+'18',border:`1px solid ${T.accent}44`,color:T.accent,cursor:exporting?'default':'pointer',opacity:exporting?0.6:1}}>{exporting?'Preparing...':<>{'\uD83D\uDDA8'} Print / PDF</>}</button>}
-        <button onClick={addRoll} style={{padding:'4px 12px',borderRadius:5,fontSize:11,fontFamily:"'Geist Mono',monospace",background:T.accent,border:'none',color:'#0e0d0b',fontWeight:600,cursor:'pointer'}}>+ New Roll</button>
+        <button onClick={()=>addRoll()} style={{padding:'4px 12px',borderRadius:5,fontSize:11,fontFamily:"'Geist Mono',monospace",background:CAM.accent,border:'none',color:'#0e0d0b',fontWeight:600,cursor:'pointer'}}>+ New Roll</button>
       </div>
 
       {/* Shoot Day filter — shows all unique shoot days across rolls */}
@@ -5460,18 +5577,43 @@ function CameraReport(){
         );
       })()}
 
-      {/* Roll tabs — filtered by selected shoot day */}
+      {/* Camera switcher + Roll dropdown (per-camera) */}
       {rolls.length>0&&(()=>{
-        const visRolls=filterDay==='all'?rolls:rolls.filter(r=>r.shootDay===filterDay);
+        // Rolls for the active camera, honouring the day filter.
+        const visRolls=(filterDay==='all'?camRolls:camRolls.filter(r=>r.shootDay===filterDay));
         return(
-          <div style={{display:'flex',gap:8,padding:'8px 16px 4px',flexShrink:0,alignItems:'center'}}>
+          <div style={{display:'flex',gap:8,padding:'8px 16px 4px',flexShrink:0,alignItems:'center',flexWrap:'wrap'}}>
+            {/* CAMERA selector */}
+            <span style={{fontSize:9,fontFamily:"'Geist Mono',monospace",color:T.textDim,letterSpacing:'0.08em'}}>CAM</span>
+            <div style={{display:'flex',gap:4,alignItems:'center'}}>
+              {existingCams.map(c=>{
+                const cfg=CAM_CONFIG[c];
+                const on=activeCam===c;
+                return(
+                  <button key={c} onClick={()=>setActiveCam(c)}
+                    style={{width:30,height:30,borderRadius:7,fontSize:13,fontWeight:700,cursor:'pointer',
+                      fontFamily:"'Geist Mono',monospace",
+                      background:on?cfg.accent:cfg.tint,
+                      color:on?'#0e0d0b':cfg.accent,
+                      border:`1.5px solid ${on?cfg.accent:cfg.accent+'55'}`}}>
+                    {cfg.label}
+                  </button>
+                );
+              })}
+              {existingCams.length<CAM_ORDER.length&&(
+                <button onClick={addCamera} title="Add another camera"
+                  style={{width:30,height:30,borderRadius:7,fontSize:16,cursor:'pointer',
+                    background:'transparent',color:T.textDim,border:`1px dashed ${T.border}`}}>+</button>
+              )}
+            </div>
+
+            {/* ROLL dropdown for the active camera */}
+            <span style={{fontSize:9,fontFamily:"'Geist Mono',monospace",color:T.textDim,letterSpacing:'0.08em',marginLeft:8}}>ROLL</span>
             {visRolls.length===0
-              ?<span style={{fontSize:11,color:T.textDim,fontFamily:"'Geist Mono',monospace",padding:'4px 0'}}>No rolls for this day yet</span>
-              :<>
-                <span style={{fontSize:9,fontFamily:"'Geist Mono',monospace",color:T.textDim,letterSpacing:'0.08em'}}>ROLL</span>
-                <select value={activeRoll||''} onChange={e=>setActiveRoll(e.target.value)}
-                  style={{background:T.surface2,border:`1px solid ${T.border}`,borderRadius:6,
-                    padding:'6px 10px',fontSize:13,color:T.accent,fontWeight:600,
+              ?<span style={{fontSize:11,color:T.textDim,fontFamily:"'Geist Mono',monospace",padding:'4px 0'}}>No {activeCam} cam rolls this day</span>
+              :<select value={activeRoll||''} onChange={e=>setActiveRoll(e.target.value)}
+                  style={{background:T.surface2,border:`1.5px solid ${CAM.accent}66`,borderRadius:6,
+                    padding:'6px 10px',fontSize:13,color:CAM.accent,fontWeight:600,
                     fontFamily:"'Geist Mono',monospace",cursor:'pointer',minWidth:180}}>
                   {visRolls.map(r=>(
                     <option key={r.id} value={r.id}>
@@ -5479,8 +5621,12 @@ function CameraReport(){
                     </option>
                   ))}
                 </select>
-              </>
             }
+            <button onClick={()=>addRoll()} title={'Add a new '+activeCam+' cam roll'}
+              style={{padding:'5px 10px',borderRadius:6,fontSize:10,fontFamily:"'Geist Mono',monospace",
+                background:CAM.tint,border:`1px solid ${CAM.accent}55`,color:CAM.accent,cursor:'pointer'}}>
+              + Roll
+            </button>
           </div>
         );
       })()}
@@ -5609,7 +5755,7 @@ function CameraReport(){
 
       {!roll&&!hasSearch&&<div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:12,color:T.textDim}}>
         <div style={{fontSize:13}}>No camera rolls yet.</div>
-        <button onClick={addRoll} style={{padding:'8px 18px',borderRadius:6,background:T.accent,border:'none',color:'#0e0d0b',fontWeight:600,fontSize:12,cursor:'pointer'}}>+ Start a roll</button>
+        <button onClick={()=>addRoll()} style={{padding:'8px 18px',borderRadius:6,background:T.accent,border:'none',color:'#0e0d0b',fontWeight:600,fontSize:12,cursor:'pointer'}}>+ Start a roll</button>
       </div>}
 
       {roll&&!(showSearch&&hasSearch)&&<div style={{flex:1,overflow:'auto',minHeight:0}}>
@@ -5785,9 +5931,22 @@ function CameraReport(){
           </table>
         </div>
         <div style={{padding:'10px 16px',display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
-          <button onClick={addTake} style={{padding:'7px 16px',borderRadius:6,border:`1px dashed ${T.accent}66`,background:T.accent+'10',color:T.accent,fontSize:12,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>+ Add take</button>
+          <button onClick={addTake} style={{padding:'7px 16px',borderRadius:6,border:`1px dashed ${CAM.accent}66`,background:CAM.tint,color:CAM.accent,fontSize:12,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>+ Add take</button>
           <button onClick={addShot} style={{padding:'7px 16px',borderRadius:6,border:`1px dashed ${T.border}`,background:'transparent',color:T.textMute,fontSize:12,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>+ New shot</button>
           <button onClick={addNewScene} style={{padding:'7px 16px',borderRadius:6,border:`1px dashed ${T.border}`,background:'transparent',color:T.textMute,fontSize:12,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>+ New scene</button>
+          {existingCams.length>1&&(
+            <button onClick={()=>setSyncCams(s=>!s)}
+              title="When on, Add take / New shot / New scene adds a matching row to every camera's current roll at once"
+              style={{display:'flex',alignItems:'center',gap:6,padding:'7px 12px',borderRadius:6,cursor:'pointer',
+                border:`1.5px solid ${syncCams?CAM.accent:T.border}`,
+                background:syncCams?CAM.tint:'transparent',
+                color:syncCams?CAM.accent:T.textDim,fontSize:11,fontFamily:"'Geist Mono',monospace"}}>
+              <span style={{width:15,height:15,borderRadius:3,display:'grid',placeItems:'center',fontSize:10,fontWeight:700,
+                background:syncCams?CAM.accent:'transparent',color:syncCams?'#0e0d0b':T.textDim,
+                border:`1px solid ${syncCams?CAM.accent:T.border}`}}>{syncCams?'\u2713':''}</span>
+              Sync cams ({existingCams.join('+')})
+            </button>
+          )}
           <div style={{flex:1}}/>
           <button onClick={resequenceClips} title="Renumber all clip names in sequence from the first one"
             style={{padding:'6px 12px',borderRadius:6,border:`1px solid ${T.border}`,background:'transparent',
