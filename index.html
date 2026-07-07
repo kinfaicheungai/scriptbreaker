@@ -82,7 +82,7 @@ const LOC_COLORS=["#7ab6c4","#d49a5c","#c4654b","#7aa37a","#c9a14a","#a07bc4"];
 ═══════════════════════════════════════════════════════════ */
 const LANGS={
   en:{
-    cabinet:"Script Breaker",newVersion:"v12.12 · Multi-Camera",importJson:"Import JSON",
+    cabinet:"Script Breaker",newVersion:"v12.13 · Move Roll Between Cams",importJson:"Import JSON",
     noProjects:"No projects yet",importFirst:"Import a JSON breakdown from Claude to get started",
     howItWorks:"How it works",
     step1t:"Analyse in Claude Project",step1d:"Upload screenplay PDF to a Claude Project. Ask Claude to output a full breakdown JSON.",
@@ -104,7 +104,7 @@ const LANGS={
     allLocations:"All locations",
   },
   zh:{
-    cabinet:"Script Breaker",newVersion:"v12.12 · 多机位",importJson:"导入JSON",
+    cabinet:"Script Breaker",newVersion:"v12.13 · 转移机位",importJson:"导入JSON",
     noProjects:"暂无项目",importFirst:"从Claude导入JSON解构文件即可开始",
     howItWorks:"使用流程",
     step1t:"在Claude Project分析剧本",step1d:"上传剧本PDF至Claude Project，让Claude输出完整解构JSON。",
@@ -126,7 +126,7 @@ const LANGS={
     allLocations:"全部地点",
   },
   ja:{
-    cabinet:"Script Breaker",newVersion:"v12.12",importJson:"JSONインポート",
+    cabinet:"Script Breaker",newVersion:"v12.13",importJson:"JSONインポート",
     noProjects:"プロジェクトなし",importFirst:"ClaudeからJSONをインポートして開始",
     howItWorks:"使い方",
     step1t:"Claudeで脚本分析",step1d:"脚本PDFをClaudeプロジェクトにアップロード。完全なJSONを出力するよう依頼。",
@@ -4936,6 +4936,27 @@ function CameraReport(){
     addRoll(next); // creates e.g. B001 and switches to it
   }
 
+  // Move an entire roll (with all its takes) to a different camera.
+  // The roll is auto-renumbered to the next available number on the target
+  // camera (e.g. A005 moved to B cam -> B003). Then we switch to that camera
+  // and select the moved roll so the user can confirm.
+  function moveRollToCam(rollId,targetCam){
+    const rk=rolls.find(r=>r.id===rollId);
+    if(!rk||camOf(rk)===targetCam)return;
+    // Compute next roll number on the target camera (excluding this roll).
+    let max=0;
+    rolls.forEach(r=>{
+      if(r.id===rollId)return;
+      if(camOf(r)===targetCam){const m=(r.roll||'').match(/(\d+)/);if(m){const n=parseInt(m[1],10);if(n>max)max=n;}}
+    });
+    const newRollNo=targetCam+String(max+1).padStart(3,'0');
+    if(!confirm(`Move roll ${rk.roll||''} (${(rk.takes||[]).length} clips) to ${targetCam} cam?\nIt will be renumbered to ${newRollNo}.`))return;
+    const updated=rolls.map(r=>r.id===rollId?{...r,cam:targetCam,roll:newRollNo}:r);
+    setRolls(updated); saveRolls(updated);
+    setActiveCam(targetCam);
+    setActiveRoll(rollId);
+  }
+
   function patchRoll(id,obj){
     const updated=rolls.map(r=>r.id===id?{...r,...obj}:r);
     setRolls(updated); saveRolls(updated);
@@ -5764,11 +5785,19 @@ function CameraReport(){
           <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6,flexWrap:'wrap'}}>
             <div>
               <span style={metaLabel}>ROLL #</span>
-              <input value={roll.roll||''} onChange={e=>patchRoll(roll.id,{roll:e.target.value})} style={{...metaInput,width:74,fontSize:13,color:T.accent,fontWeight:600,padding:'4px 6px'}}/>
+              <input value={roll.roll||''} onChange={e=>patchRoll(roll.id,{roll:e.target.value})} style={{...metaInput,width:74,fontSize:13,color:CAM.accent,fontWeight:600,padding:'4px 6px'}}/>
             </div>
             <div>
               <span style={metaLabel}>MAG #</span>
               <input value={roll.mag||''} onChange={e=>patchRoll(roll.id,{mag:e.target.value})} style={{...metaInput,width:60}}/>
+            </div>
+            <div>
+              <span style={metaLabel}>CAM</span>
+              <select value={camOf(roll)} onChange={e=>moveRollToCam(roll.id,e.target.value)}
+                title="Move this whole roll to another camera"
+                style={{...metaInput,width:56,fontSize:13,fontWeight:700,color:CAM.accent,cursor:'pointer',padding:'4px 6px'}}>
+                {CAM_ORDER.map(c=><option key={c} value={c}>{c}</option>)}
+              </select>
             </div>
             <div style={{flex:1}}/>
             <button onClick={()=>deleteRoll(roll.id)} style={{padding:'3px 9px',borderRadius:5,fontSize:9,fontFamily:"'Geist Mono',monospace",background:'transparent',border:`1px solid ${T.danger}55`,color:T.danger,cursor:'pointer'}}>Delete roll</button>
