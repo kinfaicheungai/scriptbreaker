@@ -82,7 +82,7 @@ const LOC_COLORS=["#7ab6c4","#d49a5c","#c4654b","#7aa37a","#c9a14a","#a07bc4"];
 ═══════════════════════════════════════════════════════════ */
 const LANGS={
   en:{
-    cabinet:"Script Breaker",newVersion:"v12.14.1 · Search Fix",importJson:"Import JSON",
+    cabinet:"Script Breaker",newVersion:"v12.15 · Move Clips & Editable Scene",importJson:"Import JSON",
     noProjects:"No projects yet",importFirst:"Import a JSON breakdown from Claude to get started",
     howItWorks:"How it works",
     step1t:"Analyse in Claude Project",step1d:"Upload screenplay PDF to a Claude Project. Ask Claude to output a full breakdown JSON.",
@@ -104,7 +104,7 @@ const LANGS={
     allLocations:"All locations",
   },
   zh:{
-    cabinet:"Script Breaker",newVersion:"v12.14.1 · 搜索修复",importJson:"导入JSON",
+    cabinet:"Script Breaker",newVersion:"v12.15 · 转移片段与可编辑场景",importJson:"导入JSON",
     noProjects:"暂无项目",importFirst:"从Claude导入JSON解构文件即可开始",
     howItWorks:"使用流程",
     step1t:"在Claude Project分析剧本",step1d:"上传剧本PDF至Claude Project，让Claude输出完整解构JSON。",
@@ -126,7 +126,7 @@ const LANGS={
     allLocations:"全部地点",
   },
   ja:{
-    cabinet:"Script Breaker",newVersion:"v12.14.1",importJson:"JSONインポート",
+    cabinet:"Script Breaker",newVersion:"v12.15",importJson:"JSONインポート",
     noProjects:"プロジェクトなし",importFirst:"ClaudeからJSONをインポートして開始",
     howItWorks:"使い方",
     step1t:"Claudeで脚本分析",step1d:"脚本PDFをClaudeプロジェクトにアップロード。完全なJSONを出力するよう依頼。",
@@ -4219,6 +4219,7 @@ function computeSceneCoverage(rolls){
 /* ═══ ScenePicker — multi-select up to 3 scenes per take ═══ */
 function ScenePicker({value,onChange,scenes,displayValue}){
   const [open,setOpen]=React.useState(false);
+  const [editing,setEditing]=React.useState(false); // typing raw text vs showing IE display
   const [fixPos,setFixPos]=React.useState({top:0,left:0,width:200});
   const wrapRef=React.useRef(null);
   const selectedRef=React.useRef(null);
@@ -4256,9 +4257,15 @@ function ScenePicker({value,onChange,scenes,displayValue}){
   return(
     <div ref={wrapRef} style={{position:'relative',width:'100%'}}>
       <div style={{display:'flex',alignItems:'center'}}>
-        <input value={displayValue!=null?displayValue:selected.join(', ')} readOnly placeholder="-" onClick={openPicker}
+        <input
+          value={editing?(value||''):(displayValue!=null?displayValue:selected.join(', '))}
+          placeholder="-"
+          onFocus={()=>setEditing(true)}
+          onBlur={()=>setEditing(false)}
+          onChange={e=>onChange(e.target.value)}
+          onClick={openPicker}
           style={{flex:1,minWidth:0,background:'transparent',border:'none',padding:'8px 4px',
-            fontSize:12,color:T.text,cursor:'pointer',fontFamily:"'Geist Mono',monospace"}}/>
+            fontSize:12,color:T.text,fontFamily:"'Geist Mono',monospace"}}/>
         <button type="button" onClick={()=>open?setOpen(false):openPicker()}
           style={{flexShrink:0,background:'transparent',border:'none',color:T.accent,cursor:'pointer',fontSize:11,padding:'0 4px'}}>{'\u25BC'}</button>
       </div>
@@ -4782,6 +4789,7 @@ function CameraReport(){
   const [exporting,setExporting]=React.useState(false);
   const [showAIFill,setShowAIFill]=React.useState(false);
   const [filterDay,setFilterDay]=React.useState('all');
+  const [selTakeIds,setSelTakeIds]=React.useState([]); // multi-selected clip rows (for moving)
   const [showSearch,setShowSearch]=React.useState(false);
   const [searchQ,setSearchQ]=React.useState({});  // field -> search string
   const unsubRef=React.useRef(null);
@@ -4883,6 +4891,30 @@ function CameraReport(){
     setActiveCam(targetCam);
     setActiveRoll(rollId);
   }
+
+  // Move the currently multi-selected clip rows from the active roll to
+  // another roll (of the SAME camera). Clips keep their original names; the
+  // user can Resequence afterwards if desired. This is a move, not a copy.
+  function moveTakesToRoll(targetRollId){
+    if(!roll||selTakeIds.length===0)return;
+    const target=rolls.find(r=>r.id===targetRollId);
+    if(!target||target.id===roll.id)return;
+    const moving=roll.takes.filter(t=>selTakeIds.includes(t.id));
+    if(moving.length===0)return;
+    if(!confirm(`Move ${moving.length} clip${moving.length!==1?'s':''} from ${roll.roll||''} to ${target.roll||''}?`))return;
+    const updated=rolls.map(r=>{
+      if(r.id===roll.id) return {...r,takes:r.takes.filter(t=>!selTakeIds.includes(t.id))};
+      if(r.id===targetRollId) return {...r,takes:[...r.takes,...moving]};
+      return r;
+    });
+    setRolls(updated); saveRolls(updated);
+    setSelTakeIds([]);
+  }
+  function toggleTakeSel(id){
+    setSelTakeIds(prev=>prev.includes(id)?prev.filter(x=>x!==id):[...prev,id]);
+  }
+  // Clear selection whenever the active roll changes (selection is per-roll).
+  React.useEffect(()=>{ setSelTakeIds([]); },[activeRoll]);
 
   function patchRoll(id,obj){
     const updated=rolls.map(r=>r.id===id?{...r,...obj}:r);
@@ -5805,9 +5837,42 @@ function CameraReport(){
         </div>
 
         {/* Take table */}
+        {/* Multi-select action bar — shown when clips are ticked */}
+        {selTakeIds.length>0&&(()=>{
+          const sameCamRolls=rolls.filter(r=>camOf(r)===activeCam&&r.id!==roll.id);
+          return(
+            <div style={{padding:'8px 16px',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',
+              background:CAM.tint,borderBottom:`1px solid ${CAM.accent}44`}}>
+              <span style={{fontSize:11,fontFamily:"'Geist Mono',monospace",color:CAM.accent,fontWeight:600}}>
+                {selTakeIds.length} clip{selTakeIds.length!==1?'s':''} selected
+              </span>
+              <span style={{fontSize:10,color:T.textDim,fontFamily:"'Geist Mono',monospace"}}>Move to roll:</span>
+              {sameCamRolls.length===0
+                ?<span style={{fontSize:10,color:T.textDim,fontStyle:'italic'}}>no other {activeCam} cam roll — create one first</span>
+                :<select defaultValue="" onChange={e=>{ if(e.target.value){ moveTakesToRoll(e.target.value); e.target.value=''; } }}
+                    style={{background:T.surface2,border:`1px solid ${CAM.accent}66`,borderRadius:5,
+                      padding:'5px 9px',fontSize:12,color:CAM.accent,fontWeight:600,
+                      fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>
+                    <option value="">- select roll -</option>
+                    {sameCamRolls.map(r=><option key={r.id} value={r.id}>{r.roll||'(roll)'} {'\u00B7'} {(r.takes||[]).length} clips</option>)}
+                  </select>
+              }
+              <button onClick={()=>setSelTakeIds([])}
+                style={{padding:'4px 10px',borderRadius:5,fontSize:10,fontFamily:"'Geist Mono',monospace",
+                  background:'transparent',border:`1px solid ${T.border}`,color:T.textDim,cursor:'pointer'}}>Clear</button>
+            </div>
+          );
+        })()}
+
         <div style={{overflowX:'auto'}}>
-          <table style={{borderCollapse:'collapse',width:'100%',minWidth:1242}}>
+          <table style={{borderCollapse:'collapse',width:'100%',minWidth:1272}}>
             <thead><tr>
+              <th style={{...th,width:30,textAlign:'center'}}>
+                <input type="checkbox"
+                  checked={roll.takes.length>0&&selTakeIds.length===roll.takes.length}
+                  onChange={e=>setSelTakeIds(e.target.checked?roll.takes.map(t=>t.id):[])}
+                  style={{cursor:'pointer'}} title="Select all"/>
+              </th>
               <th style={{...th,minWidth:110}}>SCENE</th><th style={{...th,width:38}}>SHOT</th><th style={{...th,width:46}}>TAKE</th><th style={{...th,width:36}}>T/S</th>
               <th style={{...th,width:88}}>CLIP</th><th style={{...th,width:72}}>LENS</th><th style={{...th,width:65}}>FOCAL</th>
               <th style={{...th,width:66}}>STOP</th>
@@ -5828,10 +5893,14 @@ function CameraReport(){
                 const needFocal=hasScene&&!String(t.focal||'').trim();
                 const needStop=hasScene&&!String(t.stop||'').trim();
                 const reqStyle={background:'rgba(229,72,77,0.16)',boxShadow:'inset 0 0 0 1.5px #e5484d'};
+                const isSel=selTakeIds.includes(t.id);
                 return(
                 <tr key={t.id} style={{borderBottom:`1px solid ${T.rule}`,
                   borderTop:newGroup?`2px solid ${T.accent}66`:'none',
-                  background:i%2?T.surface2+'55':'transparent'}}>
+                  background:isSel?(CAM.tint):(i%2?T.surface2+'55':'transparent')}}>
+                  <td style={{borderRight:`1px solid ${T.rule}`,textAlign:'center'}}>
+                    <input type="checkbox" checked={isSel} onChange={()=>toggleTakeSel(t.id)} style={{cursor:'pointer'}}/>
+                  </td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}>
                     <ScenePicker value={t.scene||''} scenes={scenes} displayValue={sceneWithIE(t.scene)}
                       onChange={v=>{
