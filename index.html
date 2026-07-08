@@ -82,7 +82,7 @@ const LOC_COLORS=["#7ab6c4","#d49a5c","#c4654b","#7aa37a","#c9a14a","#a07bc4"];
 ═══════════════════════════════════════════════════════════ */
 const LANGS={
   en:{
-    cabinet:"Script Breaker",newVersion:"v12.13 · Move Roll Between Cams",importJson:"Import JSON",
+    cabinet:"Script Breaker",newVersion:"v12.14 · Presets Menu & Page Progress",importJson:"Import JSON",
     noProjects:"No projects yet",importFirst:"Import a JSON breakdown from Claude to get started",
     howItWorks:"How it works",
     step1t:"Analyse in Claude Project",step1d:"Upload screenplay PDF to a Claude Project. Ask Claude to output a full breakdown JSON.",
@@ -104,7 +104,7 @@ const LANGS={
     allLocations:"All locations",
   },
   zh:{
-    cabinet:"Script Breaker",newVersion:"v12.13 · 转移机位",importJson:"导入JSON",
+    cabinet:"Script Breaker",newVersion:"v12.14 · 预设菜单与页数进度",importJson:"导入JSON",
     noProjects:"暂无项目",importFirst:"从Claude导入JSON解构文件即可开始",
     howItWorks:"使用流程",
     step1t:"在Claude Project分析剧本",step1d:"上传剧本PDF至Claude Project，让Claude输出完整解构JSON。",
@@ -126,7 +126,7 @@ const LANGS={
     allLocations:"全部地点",
   },
   ja:{
-    cabinet:"Script Breaker",newVersion:"v12.13",importJson:"JSONインポート",
+    cabinet:"Script Breaker",newVersion:"v12.14",importJson:"JSONインポート",
     noProjects:"プロジェクトなし",importFirst:"ClaudeからJSONをインポートして開始",
     howItWorks:"使い方",
     step1t:"Claudeで脚本分析",step1d:"脚本PDFをClaudeプロジェクトにアップロード。完全なJSONを出力するよう依頼。",
@@ -2473,14 +2473,19 @@ function BDView(){
               const allScenes=proj.scenes||[];
               const shotCount=allScenes.filter(s=>camCoverage[s.id]).length;
               const total=allScenes.length;
-              const pct=total?Math.round(shotCount/total*100):0;
+              // Progress % is weighted by PAGE count (scenes vary in length),
+              // so it reflects how much of the script has actually been shot.
+              const pageOf=s=>{const p=parseFloat(s.pages);return isNaN(p)?0:p;};
+              const totalPages=allScenes.reduce((sum,s)=>sum+pageOf(s),0);
+              const shotPages=allScenes.filter(s=>camCoverage[s.id]).reduce((sum,s)=>sum+pageOf(s),0);
+              const pct=totalPages>0?Math.round(shotPages/totalPages*100):(total?Math.round(shotCount/total*100):0);
               return(
                 <div style={{padding:'4px 14px 10px',borderBottom:`1px solid ${T.rule}`,marginBottom:6}}>
                   <div style={{display:'flex',alignItems:'baseline',gap:6,marginBottom:6}}>
                     <span style={{fontSize:18,fontWeight:700,color:T.accent,fontFamily:"'Geist Mono',monospace"}}>{shotCount}</span>
                     <span style={{fontSize:11,color:T.textDim,fontFamily:"'Geist Mono',monospace"}}>/ {total} scenes shot</span>
                     <span style={{flex:1}}/>
-                    <span style={{fontSize:11,color:T.textMute,fontFamily:"'Geist Mono',monospace"}}>{pct}%</span>
+                    <span style={{fontSize:11,color:T.textMute,fontFamily:"'Geist Mono',monospace"}} title={`${shotPages.toFixed(1)} / ${totalPages.toFixed(1)} pages`}>{pct}%</span>
                   </div>
                   <div style={{height:5,borderRadius:3,background:T.surface2,overflow:'hidden',marginBottom:8}}>
                     <div style={{height:'100%',width:pct+'%',background:T.accent,borderRadius:3,transition:'width 0.3s'}}/>
@@ -4148,6 +4153,7 @@ function AIFillModal({roll, projId, scenes, onApply, onClose}){
 const SB_NOTE_PRESETS_KEY='sb_camrep_note_presets';
 const SB_FOCAL_PRESETS_KEY='sb_camrep_focal_presets';
 const SB_STOP_PRESETS_KEY='sb_camrep_stop_presets';
+const SB_FILTER2_PRESETS_KEY='sb_camrep_filter2_presets';
 
 /* Multi-camera config: each camera letter has a distinct header colour so
    the user can tell at a glance which camera's report they're editing. */
@@ -4375,60 +4381,24 @@ function NotesPicker({value,onChange}){
   );
 }
 
-/* ═══ NotePresetsModal — manage quick-select notes list ═══ */
-function NotePresetsModal({onClose}){
+/* ═══ Generic PresetsModal — one modal drives every field's dropdown
+   options list (notes, focal, stop, filter 2, and future fields).
+   Config: {title, storageKey, defaults, placeholder, normalize} ═══ */
+function PresetsModal({config,onClose,onSaved}){
+  const {title,storageKey,defaults,placeholder,normalize}=config;
+  const hasDefaults=Array.isArray(defaults)&&defaults.length>0;
   const [items,setItems]=React.useState(()=>{
-    try{return JSON.parse(localStorage.getItem(SB_NOTE_PRESETS_KEY)||'[]');}catch{return[];}
+    try{const v=JSON.parse(localStorage.getItem(storageKey)||'null');
+      if(Array.isArray(v)&&v.length)return v;
+      return hasDefaults?defaults:[];
+    }catch{return hasDefaults?defaults:[];}
   });
   const [draft,setDraft]=React.useState('');
-  function save(next){setItems(next);localStorage.setItem(SB_NOTE_PRESETS_KEY,JSON.stringify(next));}
-  function add(){const v=draft.trim();if(!v||items.includes(v))return;save([...items,v]);setDraft('');}
+  function save(next){setItems(next);localStorage.setItem(storageKey,JSON.stringify(next));onSaved&&onSaved(next);}
+  function add(){let v=draft.trim();if(!v)return;if(normalize)v=normalize(v);if(items.includes(v))return;save([...items,v]);setDraft('');}
   function remove(i){save(items.filter((_,idx)=>idx!==i));}
   function moveUp(i){if(i===0)return;const n=[...items];[n[i-1],n[i]]=[n[i],n[i-1]];save(n);}
-  return(
-    <div style={{position:'fixed',inset:0,zIndex:9999,background:'rgba(0,0,0,0.72)',
-      display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
-      <div style={{background:T.panel,border:`1px solid ${T.border}`,borderRadius:10,
-        width:'100%',maxWidth:360,maxHeight:'78vh',overflow:'auto',
-        boxShadow:'0 16px 48px rgba(0,0,0,0.6)',display:'flex',flexDirection:'column'}}>
-        <div style={{padding:'12px 16px',borderBottom:`1px solid ${T.rule}`,display:'flex',alignItems:'center'}}>
-          <span style={{fontSize:13,fontWeight:600,color:T.text,flex:1}}>Note Presets</span>
-          <button onClick={onClose} style={{background:'transparent',border:'none',color:T.textDim,fontSize:18,cursor:'pointer',lineHeight:1}}>{'\u00D7'}</button>
-        </div>
-        <div style={{padding:14,flex:1,overflow:'auto'}}>
-          <div style={{display:'flex',gap:6,marginBottom:12}}>
-            <input value={draft} onChange={e=>setDraft(e.target.value)}
-              onKeyDown={e=>e.key==='Enter'&&add()} placeholder="Add a preset note..."
-              style={{flex:1,background:T.surface2,border:`1px solid ${T.border}`,borderRadius:5,
-                padding:'7px 10px',fontSize:12,color:T.text,fontFamily:"'Geist Mono',monospace"}}/>
-            <button onClick={add} style={{padding:'7px 14px',borderRadius:5,background:T.accent,
-              border:'none',color:'#0e0d0b',fontWeight:600,fontSize:12,cursor:'pointer'}}>Add</button>
-          </div>
-          {items.length===0&&<div style={{fontSize:11,color:T.textDim,fontStyle:'italic'}}>No presets yet.</div>}
-          {items.map((p,i)=>(
-            <div key={i} style={{display:'flex',alignItems:'center',gap:6,padding:'6px 0',borderBottom:`1px solid ${T.rule}`}}>
-              <span style={{flex:1,fontSize:12,color:T.text,fontFamily:"'Geist Mono',monospace"}}>{p}</span>
-              {i>0&&<button onClick={()=>moveUp(i)} style={{background:'transparent',border:`1px solid ${T.border}`,borderRadius:4,color:T.textDim,fontSize:11,padding:'2px 7px',cursor:'pointer'}}>{'\u2191'}</button>}
-              <button onClick={()=>remove(i)} style={{background:'transparent',border:`1px solid ${T.danger}44`,borderRadius:4,color:T.danger,fontSize:11,padding:'2px 7px',cursor:'pointer'}}>del</button>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ═══ FocalPresetsModal — manage focal-length dropdown options ═══ */
-function FocalPresetsModal({onClose,onSaved,defaults}){
-  const [items,setItems]=React.useState(()=>{
-    try{const v=JSON.parse(localStorage.getItem(SB_FOCAL_PRESETS_KEY)||'null');return (Array.isArray(v)&&v.length)?v:(defaults||[]);}catch{return defaults||[];}
-  });
-  const [draft,setDraft]=React.useState('');
-  function save(next){setItems(next);localStorage.setItem(SB_FOCAL_PRESETS_KEY,JSON.stringify(next));onSaved&&onSaved(next);}
-  function add(){let v=draft.trim();if(!v)return;if(/^\d+(\.\d+)?$/.test(v))v=v+'mm';if(items.includes(v))return;save([...items,v]);setDraft('');}
-  function remove(i){save(items.filter((_,idx)=>idx!==i));}
-  function moveUp(i){if(i===0)return;const n=[...items];[n[i-1],n[i]]=[n[i],n[i-1]];save(n);}
-  function resetDefaults(){if(confirm('Reset focal list to defaults?'))save(defaults||[]);}
+  function resetDefaults(){if(confirm('Reset '+title+' to defaults?'))save(defaults||[]);}
   return(
     <div style={{position:'fixed',inset:0,zIndex:9999,background:'rgba(0,0,0,0.72)',
       display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
@@ -4436,20 +4406,20 @@ function FocalPresetsModal({onClose,onSaved,defaults}){
         width:'100%',maxWidth:360,maxHeight:'78vh',overflow:'auto',
         boxShadow:'0 16px 48px rgba(0,0,0,0.6)',display:'flex',flexDirection:'column'}}>
         <div style={{padding:'12px 16px',borderBottom:`1px solid ${T.rule}`,display:'flex',alignItems:'center',gap:8}}>
-          <span style={{fontSize:13,fontWeight:600,color:T.text,flex:1}}>Focal Length Presets</span>
-          <button onClick={resetDefaults} style={{fontSize:9,color:T.textDim,background:'transparent',border:`1px solid ${T.border}`,borderRadius:4,padding:'3px 7px',cursor:'pointer',fontFamily:"'Geist Mono',monospace"}}>reset</button>
+          <span style={{fontSize:13,fontWeight:600,color:T.text,flex:1}}>{title}</span>
+          {hasDefaults&&<button onClick={resetDefaults} style={{fontSize:9,color:T.textDim,background:'transparent',border:`1px solid ${T.border}`,borderRadius:4,padding:'3px 7px',cursor:'pointer',fontFamily:"'Geist Mono',monospace"}}>reset</button>}
           <button onClick={onClose} style={{background:'transparent',border:'none',color:T.textDim,fontSize:18,cursor:'pointer',lineHeight:1}}>{'\u00D7'}</button>
         </div>
         <div style={{padding:14,flex:1,overflow:'auto'}}>
           <div style={{display:'flex',gap:6,marginBottom:12}}>
             <input value={draft} onChange={e=>setDraft(e.target.value)}
-              onKeyDown={e=>e.key==='Enter'&&add()} placeholder="e.g. 135mm or 135"
+              onKeyDown={e=>e.key==='Enter'&&add()} placeholder={placeholder||'Add an option...'}
               style={{flex:1,background:T.surface2,border:`1px solid ${T.border}`,borderRadius:5,
                 padding:'7px 10px',fontSize:12,color:T.text,fontFamily:"'Geist Mono',monospace"}}/>
             <button onClick={add} style={{padding:'7px 14px',borderRadius:5,background:T.accent,
               border:'none',color:'#0e0d0b',fontWeight:600,fontSize:12,cursor:'pointer'}}>Add</button>
           </div>
-          {items.length===0&&<div style={{fontSize:11,color:T.textDim,fontStyle:'italic'}}>No focal lengths.</div>}
+          {items.length===0&&<div style={{fontSize:11,color:T.textDim,fontStyle:'italic'}}>No options yet.</div>}
           {items.map((p,i)=>(
             <div key={i} style={{display:'flex',alignItems:'center',gap:6,padding:'6px 0',borderBottom:`1px solid ${T.rule}`}}>
               <span style={{flex:1,fontSize:12,color:T.text,fontFamily:"'Geist Mono',monospace"}}>{p}</span>
@@ -4463,108 +4433,6 @@ function FocalPresetsModal({onClose,onSaved,defaults}){
   );
 }
 
-/* ═══ SearchInputAC — text input with existing-value suggestions ═══
-   Shows a fixed dropdown of unique values already in the data.
-   User can still type anything freely; suggestions just accelerate.
-═══════════════════════════════════════════════════════════════════ */
-function SearchInputAC({value,onChange,suggestions,placeholder}){
-  const [open,setOpen]=React.useState(false);
-  const [fixPos,setFixPos]=React.useState({top:0,left:0,width:140});
-  const wrapRef=React.useRef(null);
-
-  // Only show suggestions that contain the current input (case-insensitive)
-  const filtered=React.useMemo(()=>{
-    if(!suggestions||suggestions.length===0)return[];
-    const q=(value||'').toLowerCase();
-    return q?suggestions.filter(s=>s.toLowerCase().includes(q)):suggestions;
-  },[suggestions,value]);
-
-  function openDropdown(){
-    if(!wrapRef.current||filtered.length===0)return;
-    const r=wrapRef.current.getBoundingClientRect();
-    const up=window.innerHeight-r.bottom<180&&r.top>window.innerHeight-r.bottom;
-    setFixPos({top:up?undefined:r.bottom+2,bottom:up?(window.innerHeight-r.top+2):undefined,
-      left:r.left,width:Math.max(r.width,150)});
-    setOpen(true);
-  }
-  React.useEffect(()=>{
-    if(!open)return;
-    const fn=e=>{if(wrapRef.current&&!wrapRef.current.contains(e.target))setOpen(false);};
-    document.addEventListener('mousedown',fn); document.addEventListener('touchstart',fn);
-    return()=>{document.removeEventListener('mousedown',fn); document.removeEventListener('touchstart',fn);};
-  },[open]);
-
-  return(
-    <div ref={wrapRef} style={{position:'relative',width:'100%'}}>
-      <input value={value||''} placeholder={placeholder||'any'} onChange={e=>{onChange(e.target.value);setOpen(true);}}
-        onFocus={openDropdown}
-        style={{width:'100%',background:T.panel,border:`1px solid ${value?T.accent:T.border}`,
-          borderRadius:4,padding:'5px 7px',fontSize:11,color:T.text,
-          fontFamily:"'Geist Mono',monospace"}}/>
-      {open&&filtered.length>0&&(
-        <div style={{position:'fixed',top:fixPos.top,bottom:fixPos.bottom,left:fixPos.left,
-          width:fixPos.width,zIndex:9500,maxHeight:200,overflowY:'auto',
-          background:T.panel,border:`1px solid ${T.border}`,borderRadius:6,
-          boxShadow:'0 6px 20px rgba(0,0,0,0.5)'}}>
-          {filtered.map((s,i)=>(
-            <button key={i} type="button"
-              onMouseDown={e=>{e.preventDefault();onChange(s);setOpen(false);}}
-              style={{display:'block',width:'100%',textAlign:'left',padding:'8px 11px',
-                background:'transparent',border:'none',borderBottom:`1px solid ${T.rule}`,
-                color:T.text,fontSize:12,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>
-              {s}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ═══ StopPresetsModal — manage T-stop dropdown options ═══ */
-function StopPresetsModal({onClose,onSaved,defaults}){
-  const [items,setItems]=React.useState(()=>{
-    try{const v=JSON.parse(localStorage.getItem(SB_STOP_PRESETS_KEY)||'null');return (Array.isArray(v)&&v.length)?v:(defaults||[]);}catch{return defaults||[];}
-  });
-  const [draft,setDraft]=React.useState('');
-  function save(next){setItems(next);localStorage.setItem(SB_STOP_PRESETS_KEY,JSON.stringify(next));onSaved&&onSaved(next);}
-  function add(){let v=draft.trim();if(!v)return;if(/^\d+(\.\d+)?$/.test(v))v='T'+v;if(items.includes(v))return;save([...items,v]);setDraft('');}
-  function remove(i){save(items.filter((_,idx)=>idx!==i));}
-  function moveUp(i){if(i===0)return;const n=[...items];[n[i-1],n[i]]=[n[i],n[i-1]];save(n);}
-  function resetDefaults(){if(confirm('Reset stop list to defaults?'))save(defaults||[]);}
-  return(
-    <div style={{position:'fixed',inset:0,zIndex:9999,background:'rgba(0,0,0,0.72)',
-      display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
-      <div style={{background:T.panel,border:`1px solid ${T.border}`,borderRadius:10,
-        width:'100%',maxWidth:360,maxHeight:'78vh',overflow:'auto',
-        boxShadow:'0 16px 48px rgba(0,0,0,0.6)',display:'flex',flexDirection:'column'}}>
-        <div style={{padding:'12px 16px',borderBottom:`1px solid ${T.rule}`,display:'flex',alignItems:'center',gap:8}}>
-          <span style={{fontSize:13,fontWeight:600,color:T.text,flex:1}}>T-Stop Presets</span>
-          <button onClick={resetDefaults} style={{fontSize:9,color:T.textDim,background:'transparent',border:`1px solid ${T.border}`,borderRadius:4,padding:'3px 7px',cursor:'pointer',fontFamily:"'Geist Mono',monospace"}}>reset</button>
-          <button onClick={onClose} style={{background:'transparent',border:'none',color:T.textDim,fontSize:18,cursor:'pointer',lineHeight:1}}>{'\u00D7'}</button>
-        </div>
-        <div style={{padding:14,flex:1,overflow:'auto'}}>
-          <div style={{display:'flex',gap:6,marginBottom:12}}>
-            <input value={draft} onChange={e=>setDraft(e.target.value)}
-              onKeyDown={e=>e.key==='Enter'&&add()} placeholder="e.g. T2.8 or 2.8"
-              style={{flex:1,background:T.surface2,border:`1px solid ${T.border}`,borderRadius:5,
-                padding:'7px 10px',fontSize:12,color:T.text,fontFamily:"'Geist Mono',monospace"}}/>
-            <button onClick={add} style={{padding:'7px 14px',borderRadius:5,background:T.accent,
-              border:'none',color:'#0e0d0b',fontWeight:600,fontSize:12,cursor:'pointer'}}>Add</button>
-          </div>
-          {items.length===0&&<div style={{fontSize:11,color:T.textDim,fontStyle:'italic'}}>No stops.</div>}
-          {items.map((p,i)=>(
-            <div key={i} style={{display:'flex',alignItems:'center',gap:6,padding:'6px 0',borderBottom:`1px solid ${T.rule}`}}>
-              <span style={{flex:1,fontSize:12,color:T.text,fontFamily:"'Geist Mono',monospace"}}>{p}</span>
-              {i>0&&<button onClick={()=>moveUp(i)} style={{background:'transparent',border:`1px solid ${T.border}`,borderRadius:4,color:T.textDim,fontSize:11,padding:'2px 7px',cursor:'pointer'}}>{'\u2191'}</button>}
-              <button onClick={()=>remove(i)} style={{background:'transparent',border:`1px solid ${T.danger}44`,borderRadius:4,color:T.danger,fontSize:11,padding:'2px 7px',cursor:'pointer'}}>del</button>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
 
 function LensFocalPicker({value,onChange,options,placeholder,inputStyle,align}){
   const [open,setOpen]=React.useState(false);
@@ -4827,23 +4695,30 @@ function CameraReport(){
   // Defaults pulled from the user's template (ALEXA MINI LF camera report)
   const DEFAULTS={camera:'ALEXA MINI LF',codec:'5K 1.7:1',fps:'24',shutter:'180',baseEI:'1600',lut:'Rec 709',director:'David Cook',dop:'Robin Tampoe',ac:'Dimitri Belke'};
   const SHUTTER_OPTIONS=['180','172.8'];
-  const FILTER2_OPTIONS=['ND0.6','ND1.2','ND1.8','ND2.4','ND3.0'];
   // WB 3200K..7000K in 50K steps
   const WB_OPTIONS=(()=>{const a=[];for(let k=3200;k<=7000;k+=50)a.push(k+'');return a;})();
   const LENS_OPTIONS=['Cooke Panchro i','Cooke S4','Cooke S7','Zeiss Master Prime','Zeiss Ultra Prime','Zeiss Supreme','Arri Signature Prime','Leica Summilux-C','Angenieux Zoom','Canon CN-E'];
   const DEFAULT_FOCAL=['21mm','27mm','32mm','40mm','50mm','65mm','75mm','85mm','100mm','110mm'];
-  const [focalOptions,setFocalOptions]=React.useState(()=>{
-    try{const v=JSON.parse(localStorage.getItem(SB_FOCAL_PRESETS_KEY)||'null');return (Array.isArray(v)&&v.length)?v:DEFAULT_FOCAL;}catch{return DEFAULT_FOCAL;}
-  });
-  const FOCAL_OPTIONS=focalOptions;
-  const [showFocalPresets,setShowFocalPresets]=React.useState(false);
-  // Full 1/3-stop standard T-stop scale
   const DEFAULT_STOP=['T1.4','T2','T2.2','T2.5','T2.8','T3.2','T3.5','T4','T4.5','T5.6','T6.3','T7.1','T8','T9','T11','T13','T16','T22'];
-  const [stopOptions,setStopOptions]=React.useState(()=>{
-    try{const v=JSON.parse(localStorage.getItem(SB_STOP_PRESETS_KEY)||'null');return (Array.isArray(v)&&v.length)?v:DEFAULT_STOP;}catch{return DEFAULT_STOP;}
-  });
+  const DEFAULT_FILTER2=['ND0.6','ND1.2','ND1.8','ND2.4','ND3.0'];
+  const loadOpts=(key,def)=>{try{const v=JSON.parse(localStorage.getItem(key)||'null');return (Array.isArray(v)&&v.length)?v:def;}catch{return def;}};
+  const [focalOptions,setFocalOptions]=React.useState(()=>loadOpts(SB_FOCAL_PRESETS_KEY,DEFAULT_FOCAL));
+  const [stopOptions,setStopOptions]=React.useState(()=>loadOpts(SB_STOP_PRESETS_KEY,DEFAULT_STOP));
+  const [filter2Options,setFilter2Options]=React.useState(()=>loadOpts(SB_FILTER2_PRESETS_KEY,DEFAULT_FILTER2));
+  const FOCAL_OPTIONS=focalOptions;
   const STOP_OPTIONS=stopOptions;
-  const [showStopPresets,setShowStopPresets]=React.useState(false);
+  const FILTER2_OPTIONS=filter2Options;
+  // Single active-preset editor (null = closed). Value is a config key.
+  const [activePreset,setActivePreset]=React.useState(null);
+  // Registry of all editable dropdown-option lists — add future fields here.
+  const PRESET_CONFIGS={
+    notes:  {title:'Note Presets',    storageKey:SB_NOTE_PRESETS_KEY,    defaults:null,            placeholder:'Add a preset note...',   onSaved:null},
+    focal:  {title:'Focal Length Presets', storageKey:SB_FOCAL_PRESETS_KEY, defaults:DEFAULT_FOCAL, placeholder:'e.g. 135mm or 135', normalize:v=>/^\d+(\.\d+)?$/.test(v)?v+'mm':v, onSaved:setFocalOptions},
+    stop:   {title:'T-Stop Presets',  storageKey:SB_STOP_PRESETS_KEY,    defaults:DEFAULT_STOP,    placeholder:'e.g. T2.8 or 2.8', normalize:v=>/^\d+(\.\d+)?$/.test(v)?'T'+v:v, onSaved:setStopOptions},
+    filter2:{title:'Filter 2 (ND) Presets', storageKey:SB_FILTER2_PRESETS_KEY, defaults:DEFAULT_FILTER2, placeholder:'e.g. ND1.2', normalize:v=>/^\d+(\.\d+)?$/.test(v)?'ND'+v:v, onSaved:setFilter2Options},
+  };
+  const PRESET_MENU=[{k:'notes',l:'Notes'},{k:'focal',l:'Focal'},{k:'stop',l:'Stop'},{k:'filter2',l:'Filter 2'}];
+  const [showPresetMenu,setShowPresetMenu]=React.useState(false);
 
   const [rolls,setRolls]=React.useState([]);     // [{id, roll, cam, mag, date, shootDay, ...takes}]
   const [activeRoll,setActiveRoll]=React.useState(null);
@@ -4853,7 +4728,6 @@ function CameraReport(){
   const [syncStatus,setSyncStatus]=React.useState('offline');
   const [exporting,setExporting]=React.useState(false);
   const [showAIFill,setShowAIFill]=React.useState(false);
-  const [showNotePresets,setShowNotePresets]=React.useState(false);
   const [filterDay,setFilterDay]=React.useState('all');
   const [showSearch,setShowSearch]=React.useState(false);
   const [searchQ,setSearchQ]=React.useState({});  // field -> search string
@@ -5105,7 +4979,7 @@ function CameraReport(){
       scene, shot, take, tail:false, clip:nextClipNumberFor(rk),
       lens:rk.lens||'', focal:last.focal||'', stop:last.stop||'',
       shutter:last.shutter||rk.shutter||'', ei:rk.baseEI||'',
-      intFilters:last.intFilters||'Hollywood BM', filters:last.filters||'',
+      intFilters:last.intFilters||'', filters:last.filters||'',
       wb:last.wb||'', focus:'', notes:'', photoIds:[], cloudMap:{}};
   }
 
@@ -5301,7 +5175,7 @@ function CameraReport(){
       stop:anchor?.stop||'',
       shutter:anchor?.shutter||roll.shutter||'',
       ei:anchor?.ei||roll.baseEI||'',
-      intFilters:anchor?.intFilters||'Hollywood BM',
+      intFilters:anchor?.intFilters||'',
       filters:anchor?.filters||'',
       wb:anchor?.wb||'', focus:'', notes:'',
       photoIds:[], cloudMap:{}
@@ -5553,21 +5427,31 @@ function CameraReport(){
             cursor:'pointer',display:'flex',alignItems:'center',gap:5}}>
           {'\uD83E\uDD16'} AI Fill
         </button>}
-        <button onClick={()=>setShowNotePresets(true)} title="Manage note presets"
-          style={{padding:'4px 10px',borderRadius:5,fontSize:10,fontFamily:"'Geist Mono',monospace",
-            background:'transparent',border:`1px solid ${T.border}`,color:T.textDim,cursor:'pointer'}}>
-          {'\u2699\uFE0F'} Notes
-        </button>
-        <button onClick={()=>setShowFocalPresets(true)} title="Manage focal length presets"
-          style={{padding:'4px 10px',borderRadius:5,fontSize:10,fontFamily:"'Geist Mono',monospace",
-            background:'transparent',border:`1px solid ${T.border}`,color:T.textDim,cursor:'pointer'}}>
-          {'\u2699\uFE0F'} Focal
-        </button>
-        <button onClick={()=>setShowStopPresets(true)} title="Manage T-stop presets"
-          style={{padding:'4px 10px',borderRadius:5,fontSize:10,fontFamily:"'Geist Mono',monospace",
-            background:'transparent',border:`1px solid ${T.border}`,color:T.textDim,cursor:'pointer'}}>
-          {'\u2699\uFE0F'} Stop
-        </button>
+        <div style={{position:'relative'}}>
+          <button onClick={()=>setShowPresetMenu(v=>!v)} title="Manage dropdown option lists"
+            style={{padding:'4px 10px',borderRadius:5,fontSize:10,fontFamily:"'Geist Mono',monospace",
+              background:showPresetMenu?T.chip:'transparent',border:`1px solid ${T.border}`,color:T.textDim,cursor:'pointer',
+              display:'flex',alignItems:'center',gap:4}}>
+            {'\u2699\uFE0F'} Presets {'\u25BE'}
+          </button>
+          {showPresetMenu&&(
+            <>
+              <div onClick={()=>setShowPresetMenu(false)} style={{position:'fixed',inset:0,zIndex:400}}/>
+              <div style={{position:'absolute',top:'100%',right:0,marginTop:4,zIndex:401,minWidth:140,
+                background:T.panel,border:`1px solid ${T.border}`,borderRadius:7,boxShadow:'0 8px 24px rgba(0,0,0,0.5)',overflow:'hidden'}}>
+                <div style={{padding:'6px 12px 4px',fontSize:8,fontFamily:"'Geist Mono',monospace",color:T.textDim,letterSpacing:'0.08em'}}>EDIT OPTION LISTS</div>
+                {PRESET_MENU.map(({k,l})=>(
+                  <button key={k} onClick={()=>{setActivePreset(k);setShowPresetMenu(false);}}
+                    style={{display:'block',width:'100%',textAlign:'left',padding:'9px 13px',
+                      background:'transparent',border:'none',borderTop:`1px solid ${T.rule}`,
+                      color:T.text,fontSize:12,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>
+                    {'\u2699\uFE0F'} {l}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
         {roll&&<button onClick={exportCSV} style={{padding:'4px 10px',borderRadius:5,fontSize:10,fontFamily:"'Geist Mono',monospace",background:'transparent',border:`1px solid ${T.border}`,color:T.textMute,cursor:'pointer'}}>CSV</button>}
         {roll&&<button disabled={exporting} onClick={async()=>{ setExporting(true); try{ await exportReport(); }finally{ setExporting(false); } }} style={{padding:'4px 10px',borderRadius:5,fontSize:10,fontFamily:"'Geist Mono',monospace",background:T.accent+'18',border:`1px solid ${T.accent}44`,color:T.accent,cursor:exporting?'default':'pointer',opacity:exporting?0.6:1}}>{exporting?'Preparing...':<>{'\uD83D\uDDA8'} Print / PDF</>}</button>}
         <button onClick={()=>addRoll()} style={{padding:'4px 12px',borderRadius:5,fontSize:11,fontFamily:"'Geist Mono',monospace",background:CAM.accent,border:'none',color:'#0e0d0b',fontWeight:600,cursor:'pointer'}}>+ New Roll</button>
@@ -5993,9 +5877,11 @@ function CameraReport(){
           onApply={applyAITake}
           onClose={()=>setShowAIFill(false)}/>
       )}
-      {showNotePresets&&<NotePresetsModal onClose={()=>setShowNotePresets(false)}/>}
-      {showFocalPresets&&<FocalPresetsModal onClose={()=>setShowFocalPresets(false)} onSaved={setFocalOptions} defaults={DEFAULT_FOCAL}/>}
-      {showStopPresets&&<StopPresetsModal onClose={()=>setShowStopPresets(false)} onSaved={setStopOptions} defaults={DEFAULT_STOP}/>}
+      {activePreset&&PRESET_CONFIGS[activePreset]&&(
+        <PresetsModal config={PRESET_CONFIGS[activePreset]}
+          onClose={()=>setActivePreset(null)}
+          onSaved={PRESET_CONFIGS[activePreset].onSaved}/>
+      )}
     </div>
   );
 }
