@@ -82,7 +82,7 @@ const LOC_COLORS=["#7ab6c4","#d49a5c","#c4654b","#7aa37a","#c9a14a","#a07bc4"];
 ═══════════════════════════════════════════════════════════ */
 const LANGS={
   en:{
-    cabinet:"Script Breaker",newVersion:"v12.15 · Move Clips & Editable Scene",importJson:"Import JSON",
+    cabinet:"Script Breaker",newVersion:"v12.16 · Filter 3, Smart Blanks & Undo",importJson:"Import JSON",
     noProjects:"No projects yet",importFirst:"Import a JSON breakdown from Claude to get started",
     howItWorks:"How it works",
     step1t:"Analyse in Claude Project",step1d:"Upload screenplay PDF to a Claude Project. Ask Claude to output a full breakdown JSON.",
@@ -104,7 +104,7 @@ const LANGS={
     allLocations:"All locations",
   },
   zh:{
-    cabinet:"Script Breaker",newVersion:"v12.15 · 转移片段与可编辑场景",importJson:"导入JSON",
+    cabinet:"Script Breaker",newVersion:"v12.16 · Filter3、智能留空与撤销",importJson:"导入JSON",
     noProjects:"暂无项目",importFirst:"从Claude导入JSON解构文件即可开始",
     howItWorks:"使用流程",
     step1t:"在Claude Project分析剧本",step1d:"上传剧本PDF至Claude Project，让Claude输出完整解构JSON。",
@@ -126,7 +126,7 @@ const LANGS={
     allLocations:"全部地点",
   },
   ja:{
-    cabinet:"Script Breaker",newVersion:"v12.15",importJson:"JSONインポート",
+    cabinet:"Script Breaker",newVersion:"v12.16",importJson:"JSONインポート",
     noProjects:"プロジェクトなし",importFirst:"ClaudeからJSONをインポートして開始",
     howItWorks:"使い方",
     step1t:"Claudeで脚本分析",step1d:"脚本PDFをClaudeプロジェクトにアップロード。完全なJSONを出力するよう依頼。",
@@ -3972,7 +3972,7 @@ function AIFillModal({roll, projId, scenes, onApply, onClose}){
     {k:'scene',l:'SCENE'},{k:'shot',l:'SHOT'},{k:'take',l:'TAKE'},
     {k:'clip',l:'CLIP'},{k:'lens',l:'LENS'},{k:'focal',l:'FOCAL'},
     {k:'stop',l:'STOP'},{k:'ei',l:'EI'},{k:'intFilters',l:'FILTER 1'},
-    {k:'filters',l:'FILTER 2'},{k:'nd',l:'ND'},{k:'wb',l:'WB'},
+    {k:'filters',l:'FILTER 2'},{k:'filters3',l:'FILTER 3'},{k:'nd',l:'ND'},{k:'wb',l:'WB'},
     {k:'focus',l:'FOCUS (cm)'},{k:'codec',l:'CODEC'},{k:'notes',l:'NOTES'}
   ];
 
@@ -4824,8 +4824,12 @@ function CameraReport(){
         if(doc.exists){
           const data=doc.data().rolls||[];
           setRolls(data);
+          // Seed the history baseline the first time we learn the server state,
+          // so the first local edit knows what "before" looked like. Don't
+          // treat incoming remote data as a new undo step.
+          if(prevRollsSnap.current==null){ prevRollsSnap.current=JSON.stringify(data); }
           setActiveRoll(prev=>prev||(data[0]?.id||null));
-        }else{ setRolls([]); }
+        }else{ setRolls([]); if(prevRollsSnap.current==null)prevRollsSnap.current='[]'; }
         setSyncStatus('live');
       },()=>setSyncStatus('offline'));
       unsubRef.current=unsub;
@@ -4833,7 +4837,17 @@ function CameraReport(){
     }catch(e){ setSyncStatus('offline'); }
   },[projId]);
 
-  const saveRolls=async(updated)=>{
+  // ── Undo / Redo ─────────────────────────────────────────────
+  // History of past rolls-states. We snapshot the PREVIOUS state each time a
+  // mutation persists, so undo can restore it. Redo stack holds undone states.
+  const undoStack=React.useRef([]);   // array of rolls-snapshots (JSON strings)
+  const redoStack=React.useRef([]);
+  const isTimeTravel=React.useRef(false); // true while applying an undo/redo
+  const [histTick,setHistTick]=React.useState(0); // force re-render for button enable
+  const prevRollsSnap=React.useRef(null); // last-known rolls, to push on next change
+  const HIST_LIMIT=20;
+
+  const persist=async(updated)=>{
     setSyncStatus('saving');
     try{
       const db=getFirestore();
@@ -4842,6 +4856,50 @@ function CameraReport(){
       });
     }catch(e){ setSyncStatus('offline'); }
   };
+
+  const saveRolls=async(updated)=>{
+    // Record history unless this save is itself an undo/redo application.
+    if(!isTimeTravel.current){
+      const prev=prevRollsSnap.current;
+      if(prev!=null){
+        undoStack.current.push(prev);
+        if(undoStack.current.length>HIST_LIMIT)undoStack.current.shift();
+        redoStack.current=[]; // a fresh edit clears the redo path
+        setHistTick(t=>t+1);
+      }
+    }
+    prevRollsSnap.current=JSON.stringify(updated);
+    await persist(updated);
+  };
+
+  function applySnapshot(snapStr){
+    const snap=JSON.parse(snapStr);
+    isTimeTravel.current=true;
+    setRolls(snap);
+    prevRollsSnap.current=snapStr;
+    persist(snap).finally(()=>{ isTimeTravel.current=false; });
+    // Keep a valid active roll/cam after restoring.
+    if(!snap.some(r=>r.id===activeRoll)&&snap.length>0){
+      setActiveRoll(snap[0].id); setActiveCam(camOf(snap[0]));
+    }
+  }
+  function undo(){
+    if(undoStack.current.length===0)return;
+    const cur=prevRollsSnap.current;
+    const prev=undoStack.current.pop();
+    if(cur!=null)redoStack.current.push(cur);
+    applySnapshot(prev);
+    setHistTick(t=>t+1);
+  }
+  function redo(){
+    if(redoStack.current.length===0)return;
+    const cur=prevRollsSnap.current;
+    const next=redoStack.current.pop();
+    if(cur!=null)undoStack.current.push(cur);
+    applySnapshot(next);
+    setHistTick(t=>t+1);
+  }
+  // ────────────────────────────────────────────────────────────
 
   function nextRollNo(cam){
     // Roll numbers are per-camera and prefixed with the camera letter:
@@ -5060,11 +5118,22 @@ function CameraReport(){
       scene=last.scene||(scenes[0]?.id||'');
       shot=last.shot||'/'; take=takeNoForIn(rk,scene,shot)+'';
     }
-    return {id:'tk'+Date.now()+Math.floor(Math.random()*1000),
-      scene, shot, take, tail:false, clip:nextClipNumberFor(rk),
+    // An additional take within the SAME shot ("+ Add take", i.e. take >= 2)
+    // starts with the clip-onward technical fields BLANK — the AC only fills
+    // in what changed. New shots / new scenes still carry sensible defaults.
+    const isExtraTake=(mode==='take')&&(!ref);
+    const base={id:'tk'+Date.now()+Math.floor(Math.random()*1000),
+      scene, shot, take, tail:false, clip:nextClipNumberFor(rk)};
+    if(isExtraTake){
+      return {...base,
+        lens:'', focal:'', stop:'', shutter:'', ei:'',
+        intFilters:'', filters:'', filters3:'',
+        wb:'', focus:'', notes:'', photoIds:[], cloudMap:{}};
+    }
+    return {...base,
       lens:rk.lens||'', focal:last.focal||'', stop:last.stop||'',
       shutter:last.shutter||rk.shutter||'', ei:rk.baseEI||'',
-      intFilters:last.intFilters||'', filters:last.filters||'',
+      intFilters:last.intFilters||'', filters:last.filters||'', filters3:last.filters3||'',
       wb:last.wb||'', focus:'', notes:'', photoIds:[], cloudMap:{}};
   }
 
@@ -5113,7 +5182,7 @@ function CameraReport(){
     {k:'scene',l:'SCENE'},{k:'shot',l:'SHOT'},{k:'clip',l:'CLIP'},
     {k:'lens',l:'LENS'},{k:'focal',l:'FOCAL'},{k:'stop',l:'STOP'},
     {k:'shutter',l:'SHUTTER'},{k:'ei',l:'EI'},{k:'intFilters',l:'FILTER 1'},
-    {k:'filters',l:'FILTER 2'},{k:'wb',l:'WB'},{k:'focus',l:'FOCUS'},
+    {k:'filters',l:'FILTER 2'},{k:'filters3',l:'FILTER 3'},{k:'wb',l:'WB'},{k:'focus',l:'FOCUS'},
     {k:'notes',l:'NOTES'},
   ];
   const hasSearch=Object.values(searchQ).some(v=>v&&v.trim());
@@ -5181,7 +5250,7 @@ function CameraReport(){
       tail:!!fields.tail, clip:fields.clip||nextClipNumber(),
       lens:fields.lens||roll.lens||'', focal:fields.focal||'',
       stop:fields.stop||'', ei:fields.ei||roll.baseEI||'',
-      intFilters:intFiltVal, filters:fields.filters||'',
+      intFilters:intFiltVal, filters:fields.filters||'', filters3:fields.filters3||'',
       wb:fields.wb||'', focus:fields.focus||'',
       notes:fields.notes||'',
       photoIds:[], cloudMap:{}
@@ -5262,6 +5331,7 @@ function CameraReport(){
       ei:anchor?.ei||roll.baseEI||'',
       intFilters:anchor?.intFilters||'',
       filters:anchor?.filters||'',
+      filters3:anchor?.filters3||'',
       wb:anchor?.wb||'', focus:'', notes:'',
       photoIds:[], cloudMap:{}
     };
@@ -5373,7 +5443,7 @@ function CameraReport(){
       <td>${sceneWithIE(t.scene)}</td><td style="text-align:center">${t.shot||''}</td><td style="text-align:center">${t.take||''}</td>
       <td style="text-align:center">${t.tail?'\u2705':''}</td><td>${t.clip||''}</td>
       <td>${t.lens||''}</td><td>${t.focal||''}</td><td>${t.stop||''}</td><td>${t.shutter||roll.shutter||''}</td><td>${t.ei||''}</td>
-      <td>${t.intFilters||''}</td><td>${t.filters||''}</td><td>${t.wb||''}</td><td>${fcm(t.focus)}</td>
+      <td>${t.intFilters||''}</td><td>${t.filters||''}</td><td>${t.filters3||''}</td><td>${t.wb||''}</td><td>${fcm(t.focus)}</td>
       <td>${(t.notes||'').replace(/</g,'&lt;')}</td>
       ${hasAnyPhoto?`<td>${photoMap[t.id]?`<img src="${photoMap[t.id]}" style="width:46px;height:34px;object-fit:cover;border-radius:2px;border:1px solid #999;">`:''}</td>`:''}
       </tr>`).join('');
@@ -5429,14 +5499,15 @@ function CameraReport(){
       <col style="width:3.5%"/>  <!-- EI -->
       <col style="width:8%"/>    <!-- FILTER 1 -->
       <col style="width:5%"/>    <!-- FILTER 2 (was ~7%) -->
+      <col style="width:5%"/>    <!-- FILTER 3 -->
       <col style="width:4%"/>    <!-- WB -->
-      <col style="width:5%"/>    <!-- FOCUS (cm) (was ~8%) -->
+      <col style="width:5%"/>    <!-- FOCUS (cm) -->
       <col/>                     <!-- NOTES takes remaining space -->
       ${hasAnyPhoto?'<col style="width:5%"/>':''}
     </colgroup>
     <thead><tr>
       <th>SCENE</th><th>SHOT</th><th>TAKE</th><th>T/S</th><th>CLIP</th><th>LENS</th><th>FOCAL</th><th>STOP</th><th>SHUTTER</th><th>EI</th>
-      <th>FILTER 1</th><th>FILTER 2</th><th>WB</th><th>FOCUS<br/>(cm)</th><th>NOTES</th>${hasAnyPhoto?'<th>PHOTO</th>':''}
+      <th>FILTER 1</th><th>FILTER 2</th><th>FILTER 3</th><th>WB</th><th>FOCUS<br/>(cm)</th><th>NOTES</th>${hasAnyPhoto?'<th>PHOTO</th>':''}
     </tr></thead><tbody>${rows}</tbody></table>
     </div>
     </body></html>`;
@@ -5469,12 +5540,12 @@ function CameraReport(){
 
   function exportCSV(){
     if(!roll)return;
-    const head=['SCENE','SHOT','TAKE','T/S','CLIP','LENS','FOCAL','STOP','SHUTTER','EI','FILTER 1','FILTER 2','WB','FOCUS (cm)','NOTES'];
+    const head=['SCENE','SHOT','TAKE','T/S','CLIP','LENS','FOCAL','STOP','SHUTTER','EI','FILTER 1','FILTER 2','FILTER 3','WB','FOCUS (cm)','NOTES'];
     const fcm=(v)=>{v=(v==null?'':String(v)).trim();if(!v)return '';return /^[\d.]+$/.test(v)?v+'cm':v;};
     const esc=(v)=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
     const lines=[head.join(',')];
     roll.takes.forEach(t=>{
-      lines.push([t.scene,t.shot,t.take,t.tail?'TAIL':'',t.clip,t.lens,t.focal,t.stop,t.shutter||roll.shutter||'',t.ei,t.intFilters,t.filters,t.wb,fcm(t.focus),t.notes].map(esc).join(','));
+      lines.push([t.scene,t.shot,t.take,t.tail?'TAIL':'',t.clip,t.lens,t.focal,t.stop,t.shutter||roll.shutter||'',t.ei,t.intFilters,t.filters,t.filters3,t.wb,fcm(t.focus),t.notes].map(esc).join(','));
     });
     const blob=new Blob([lines.join('\n')],{type:'text/csv'});
     const url=URL.createObjectURL(blob);
@@ -5498,6 +5569,24 @@ function CameraReport(){
           <span style={{fontFamily:"'Geist Mono',monospace",fontSize:8,color:syncStatus==='live'?T.success:T.textDim}}>{syncStatus==='live'?'LIVE':syncStatus==='saving'?'SAVING...':'OFFLINE'}</span>
         </div>
         <div style={{flex:1}}/>
+        {(()=>{ const _=histTick; const canU=undoStack.current.length>0, canR=redoStack.current.length>0;
+          return(
+            <div style={{display:'flex',gap:3}}>
+              <button onClick={undo} disabled={!canU} title="Undo"
+                style={{padding:'4px 9px',borderRadius:5,fontSize:12,fontFamily:"'Geist Mono',monospace",
+                  background:'transparent',border:`1px solid ${T.border}`,
+                  color:canU?T.text:T.textDim,cursor:canU?'pointer':'default',opacity:canU?1:0.4}}>
+                {'\u21B6'}
+              </button>
+              <button onClick={redo} disabled={!canR} title="Redo"
+                style={{padding:'4px 9px',borderRadius:5,fontSize:12,fontFamily:"'Geist Mono',monospace",
+                  background:'transparent',border:`1px solid ${T.border}`,
+                  color:canR?T.text:T.textDim,cursor:canR?'pointer':'default',opacity:canR?1:0.4}}>
+                {'\u21B7'}
+              </button>
+            </div>
+          );
+        })()}
         <button onClick={()=>setShowSearch(s=>!s)}
           style={{padding:'4px 12px',borderRadius:5,fontSize:10,fontFamily:"'Geist Mono',monospace",
             background:showSearch?T.chip:'transparent',
@@ -5662,7 +5751,7 @@ function CameraReport(){
                 <th style={{...th,width:80}}>CLIP</th><th style={{...th,width:60}}>EI</th>
                 <th style={{...th,width:60}}>FOCAL</th><th style={{...th,width:50}}>STOP</th>
                 <th style={{...th,width:55}}>SHUTTER</th><th style={{...th,width:55}}>WB</th>
-                <th style={{...th,width:64}}>FILTER 1</th><th style={{...th,width:64}}>FILTER 2</th>
+                <th style={{...th,width:64}}>FILTER 1</th><th style={{...th,width:64}}>FILTER 2</th><th style={{...th,width:64}}>FILTER 3</th>
                 <th style={th}>NOTES</th>
               </tr></thead>
               <tbody>
@@ -5721,6 +5810,9 @@ function CameraReport(){
                       </td>
                       <td style={{borderRight:`1px solid ${T.rule}`,...hl('filters')}}>
                         <input value={t.filters||''} onChange={e=>patch({filters:e.target.value})} style={ci}/>
+                      </td>
+                      <td style={{borderRight:`1px solid ${T.rule}`,...hl('filters3')}}>
+                        <input value={t.filters3||''} onChange={e=>patch({filters3:e.target.value})} style={ci}/>
                       </td>
                       <td style={{...hl('notes'),padding:0}}>
                         <div style={{display:'flex',alignItems:'center'}}>
@@ -5865,7 +5957,7 @@ function CameraReport(){
         })()}
 
         <div style={{overflowX:'auto'}}>
-          <table style={{borderCollapse:'collapse',width:'100%',minWidth:1272}}>
+          <table style={{borderCollapse:'collapse',width:'100%',minWidth:1342}}>
             <thead><tr>
               <th style={{...th,width:30,textAlign:'center'}}>
                 <input type="checkbox"
@@ -5878,7 +5970,7 @@ function CameraReport(){
               <th style={{...th,width:66}}>STOP</th>
               <th style={{...th,width:80,whiteSpace:'normal',lineHeight:1.15}}>SHUTTER</th>
               <th style={{...th,width:50}}>EI</th><th style={{...th,width:64}}>FILTER 1</th>
-              <th style={{...th,width:80}}>FILTER 2</th><th style={{...th,width:76}}>WB</th>
+              <th style={{...th,width:80}}>FILTER 2</th><th style={{...th,width:70}}>FILTER 3</th><th style={{...th,width:76}}>WB</th>
               <th style={{...th,width:46,whiteSpace:'normal',lineHeight:1.15,verticalAlign:'middle'}}>FOCUS<br/>(cm)</th>
               <th style={{...th,minWidth:180}}>NOTES</th><th style={{...th,width:44}}>{'\uD83D\uDCF7'}</th><th style={{...th,width:78}}></th>
             </tr></thead>
@@ -5890,8 +5982,11 @@ function CameraReport(){
                 // A row that has a scene number should have focal + stop filled;
                 // flag empties in red as a reminder.
                 const hasScene=!!String(t.scene||'').trim();
-                const needFocal=hasScene&&!String(t.focal||'').trim();
-                const needStop=hasScene&&!String(t.stop||'').trim();
+                // Only the FIRST take of a shot must have focal/stop; later takes
+                // in the same shot are intentionally left blank unless changed.
+                const isFirstTakeOfShot=String(t.take||'').trim()==='1'||String(t.take||'').trim()==='';
+                const needFocal=hasScene&&isFirstTakeOfShot&&!String(t.focal||'').trim();
+                const needStop=hasScene&&isFirstTakeOfShot&&!String(t.stop||'').trim();
                 const reqStyle={background:'rgba(229,72,77,0.16)',boxShadow:'inset 0 0 0 1.5px #e5484d'};
                 const isSel=selTakeIds.includes(t.id);
                 return(
@@ -5940,6 +6035,7 @@ function CameraReport(){
                   <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.ei||''} onChange={e=>patchTake(t.id,{ei:e.target.value})} style={cellInput}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.intFilters||''} onChange={e=>patchTake(t.id,{intFilters:e.target.value})} style={cellInput}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}><LensFocalPicker value={t.filters||''} onChange={v=>patchTake(t.id,{filters:v})} options={FILTER2_OPTIONS} inputStyle={cellInput}/></td>
+                  <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.filters3||''} onChange={e=>patchTake(t.id,{filters3:e.target.value})} style={cellInput}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}><LensFocalPicker value={t.wb||''} onChange={v=>patchTake(t.id,{wb:v})} options={WB_OPTIONS} inputStyle={cellInput}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.focus||''} placeholder="cm" onChange={e=>patchTake(t.id,{focus:e.target.value})} style={{...cellInput,padding:'8px 3px',textAlign:'center'}}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}><NotesPicker value={t.notes||''} onChange={v=>patchTake(t.id,{notes:v})}/></td>
