@@ -82,7 +82,7 @@ const LOC_COLORS=["#7ab6c4","#d49a5c","#c4654b","#7aa37a","#c9a14a","#a07bc4"];
 ═══════════════════════════════════════════════════════════ */
 const LANGS={
   en:{
-    cabinet:"Script Breaker",newVersion:"v12.16 · Filter 3, Smart Blanks & Undo",importJson:"Import JSON",
+    cabinet:"Script Breaker",newVersion:"v12.17 · Feet, Typeahead & Multi-Sync",importJson:"Import JSON",
     noProjects:"No projects yet",importFirst:"Import a JSON breakdown from Claude to get started",
     howItWorks:"How it works",
     step1t:"Analyse in Claude Project",step1d:"Upload screenplay PDF to a Claude Project. Ask Claude to output a full breakdown JSON.",
@@ -104,7 +104,7 @@ const LANGS={
     allLocations:"All locations",
   },
   zh:{
-    cabinet:"Script Breaker",newVersion:"v12.16 · Filter3、智能留空与撤销",importJson:"导入JSON",
+    cabinet:"Script Breaker",newVersion:"v12.17 · 英尺、联想输入与多选同步",importJson:"导入JSON",
     noProjects:"暂无项目",importFirst:"从Claude导入JSON解构文件即可开始",
     howItWorks:"使用流程",
     step1t:"在Claude Project分析剧本",step1d:"上传剧本PDF至Claude Project，让Claude输出完整解构JSON。",
@@ -126,7 +126,7 @@ const LANGS={
     allLocations:"全部地点",
   },
   ja:{
-    cabinet:"Script Breaker",newVersion:"v12.16",importJson:"JSONインポート",
+    cabinet:"Script Breaker",newVersion:"v12.17",importJson:"JSONインポート",
     noProjects:"プロジェクトなし",importFirst:"ClaudeからJSONをインポートして開始",
     howItWorks:"使い方",
     step1t:"Claudeで脚本分析",step1d:"脚本PDFをClaudeプロジェクトにアップロード。完全なJSONを出力するよう依頼。",
@@ -3973,7 +3973,7 @@ function AIFillModal({roll, projId, scenes, onApply, onClose}){
     {k:'clip',l:'CLIP'},{k:'lens',l:'LENS'},{k:'focal',l:'FOCAL'},
     {k:'stop',l:'STOP'},{k:'ei',l:'EI'},{k:'intFilters',l:'FILTER 1'},
     {k:'filters',l:'FILTER 2'},{k:'filters3',l:'FILTER 3'},{k:'nd',l:'ND'},{k:'wb',l:'WB'},
-    {k:'focus',l:'FOCUS (cm)'},{k:'codec',l:'CODEC'},{k:'notes',l:'NOTES'}
+    {k:'focus',l:"FOCUS (ft)"},{k:'codec',l:'CODEC'},{k:'notes',l:'NOTES'}
   ];
 
   const slotLabel=['📷 Monitor / Slate photo','📷 Second photo (optional — e.g. slate if first was monitor)'];
@@ -4501,6 +4501,15 @@ function LensFocalPicker({value,onChange,options,placeholder,inputStyle,align}){
   const listRef=React.useRef(null);
   const selectedRef=React.useRef(null);
 
+  // Typeahead: once the user starts typing, narrow the option list to values
+  // that CONTAIN what they typed (e.g. "56" -> 5600, 5650, 3200...no just
+  // ones containing "56"), instead of always showing the full list.
+  const q=(value||'').trim().toLowerCase();
+  const filteredOptions=React.useMemo(()=>{
+    if(!q)return options;
+    return options.filter(o=>o.toLowerCase().includes(q));
+  },[options,q]);
+
   // Use position:fixed + getBoundingClientRect so the dropdown is NEVER
   // clipped by overflow:auto/hidden on any ancestor (e.g. the table wrapper).
   function openPicker(){
@@ -4528,23 +4537,22 @@ function LensFocalPicker({value,onChange,options,placeholder,inputStyle,align}){
     return ()=>{ document.removeEventListener('mousedown',onDoc); document.removeEventListener('touchstart',onDoc); };
   },[open]);
 
-  // When the dropdown opens, jump straight to the currently selected value
-  // instead of always starting at the top of the list.
+  // When the dropdown opens WITHOUT a typed filter, jump straight to the
+  // currently selected value instead of always starting at the top.
   React.useEffect(()=>{
-    if(!open)return;
-    // Wait a frame so the list has actually rendered/measured before scrolling.
+    if(!open||q)return; // typing already narrows the list; no need to jump
     const id=requestAnimationFrame(()=>{
       if(selectedRef.current&&listRef.current){
         selectedRef.current.scrollIntoView({block:'center'});
       }
     });
     return ()=>cancelAnimationFrame(id);
-  },[open]);
+  },[open,q]);
 
   return(
     <div ref={wrapRef} style={{position:'relative',width:'100%'}}>
       <div style={{display:'flex',alignItems:'center',gap:1}}>
-        <input value={value||''} placeholder={placeholder||''} onChange={e=>onChange(e.target.value)}
+        <input value={value||''} placeholder={placeholder||''} onChange={e=>{onChange(e.target.value);setOpen(true);}}
           onFocus={openPicker}
           style={{flex:1,minWidth:0,fontFamily:"'Geist Mono',monospace",
             background:'transparent',border:'none',padding:'4px 2px',fontSize:11,color:T.text,
@@ -4563,7 +4571,10 @@ function LensFocalPicker({value,onChange,options,placeholder,inputStyle,align}){
           maxHeight:230,overflowY:'auto',
           background:T.panel,border:`1px solid ${T.border}`,borderRadius:7,
           boxShadow:'0 8px 24px rgba(0,0,0,0.5)'}}>
-          {options.map(opt=>(
+          {filteredOptions.length===0&&(
+            <div style={{padding:'10px 13px',fontSize:11,color:T.textDim,fontStyle:'italic'}}>No matches — will use typed value</div>
+          )}
+          {filteredOptions.map(opt=>(
             <button key={opt} type="button"
               ref={value===opt?selectedRef:null}
               onMouseDown={(e)=>{e.preventDefault();onChange(opt);setOpen(false);}}
@@ -4783,7 +4794,8 @@ function CameraReport(){
   const [rolls,setRolls]=React.useState([]);     // [{id, roll, cam, mag, date, shootDay, ...takes}]
   const [activeRoll,setActiveRoll]=React.useState(null);
   const [activeCam,setActiveCam]=React.useState('A');   // which camera's rolls are shown
-  const [syncCams,setSyncCams]=React.useState(false);   // add takes to all cams at once
+  const [syncCams,setSyncCams]=React.useState([]);   // array of cam letters to sync together, e.g. ['A','B']
+  const [showSyncMenu,setShowSyncMenu]=React.useState(false);
   const [camActiveRoll,setCamActiveRoll]=React.useState({}); // cam -> last selected roll id
   const [syncStatus,setSyncStatus]=React.useState('offline');
   const [exporting,setExporting]=React.useState(false);
@@ -4910,14 +4922,42 @@ function CameraReport(){
     return c+String(max+1).padStart(3,'0');
   }
 
-  function addRoll(cam){
+  // mode: 'blank' (New Roll — fresh page, minimal defaults, no shutter
+  //   pre-fill since every take fills its own) or 'continue' (+ Roll — carries
+  //   over shoot day / date / crew / camera settings from this camera's most
+  //   recent roll, for starting a fresh mag on the same day).
+  function addRoll(cam,mode){
     const c=cam||activeCam||'A';
+    const m=mode||'blank';
     const id='roll'+Date.now();
     const today=new Date().toISOString().slice(0,10);
-    const newRoll={id, roll:nextRollNo(c), cam:c, mag:'', date:today, shootDay:shootDays[0]?.day||'', location:'',
-      director:DEFAULTS.director, dop:DEFAULTS.dop, ac:DEFAULTS.ac,
-      camera:DEFAULTS.camera, codec:DEFAULTS.codec, fps:DEFAULTS.fps, shutter:DEFAULTS.shutter,
-      baseEI:DEFAULTS.baseEI, lut:DEFAULTS.lut, lens:LENS_OPTIONS[0], takes:[]};
+    let newRoll;
+    if(m==='continue'){
+      // Most recent roll for this camera (rolls are prepended, so [0] is newest).
+      const prevRoll=rolls.find(r=>camOf(r)===c);
+      newRoll={id, roll:nextRollNo(c), cam:c, mag:'',
+        date:prevRoll?.date||today,
+        shootDay:prevRoll?.shootDay||shootDays[0]?.day||'',
+        location:prevRoll?.location||'',
+        director:prevRoll?.director||DEFAULTS.director,
+        dop:prevRoll?.dop||DEFAULTS.dop,
+        ac:prevRoll?.ac||DEFAULTS.ac,
+        camera:prevRoll?.camera||DEFAULTS.camera,
+        codec:prevRoll?.codec||DEFAULTS.codec,
+        fps:prevRoll?.fps||DEFAULTS.fps,
+        shutter:prevRoll?.shutter||DEFAULTS.shutter,
+        baseEI:prevRoll?.baseEI||DEFAULTS.baseEI,
+        lut:prevRoll?.lut||DEFAULTS.lut,
+        lens:prevRoll?.lens||LENS_OPTIONS[0],
+        takes:[]};
+    }else{
+      // Blank: minimal system defaults. Shutter intentionally left empty —
+      // every take fills its own, so a roll-level default isn't needed.
+      newRoll={id, roll:nextRollNo(c), cam:c, mag:'', date:today, shootDay:shootDays[0]?.day||'', location:'',
+        director:DEFAULTS.director, dop:DEFAULTS.dop, ac:DEFAULTS.ac,
+        camera:DEFAULTS.camera, codec:DEFAULTS.codec, fps:DEFAULTS.fps, shutter:'',
+        baseEI:DEFAULTS.baseEI, lut:DEFAULTS.lut, lens:LENS_OPTIONS[0], takes:[]};
+    }
     const updated=[newRoll,...rolls];
     setRolls(updated); setActiveCam(c); setActiveRoll(id); saveRolls(updated);
   }
@@ -5137,11 +5177,12 @@ function CameraReport(){
       wb:last.wb||'', focus:'', notes:'', photoIds:[], cloudMap:{}};
   }
 
-  // Resolve each camera's target roll for a sync-add: the last roll used for
-  // that camera, or its first roll. Returns [{roll}] for all cams that have one.
+  // Resolve target rolls for a sync-add: the last roll used for each
+  // SELECTED-for-sync camera (or its first roll). Only cameras ticked in
+  // syncCams participate — e.g. just A+B, or A+B+C, etc.
   function syncTargetRolls(){
     const targets=[];
-    existingCams.forEach(c=>{
+    syncCams.forEach(c=>{
       const cr=rolls.filter(r=>camOf(r)===c);
       if(cr.length===0)return;
       const remembered=camActiveRoll[c];
@@ -5151,11 +5192,13 @@ function CameraReport(){
     return targets;
   }
 
-  // Core add: applies to the active roll, or (when syncing) to every camera's
-  // current roll. The active/primary roll determines the shared scene/shot/take.
+  // Core add: applies to the active roll, or (when the active camera is part
+  // of a sync group) to every camera in that group's current roll at once.
+  // The active/primary roll determines the shared scene/shot/take.
   function doAdd(mode){
     if(!roll)return;
-    if(syncCams&&existingCams.length>1){
+    const syncing=syncCams.includes(activeCam)&&syncCams.length>1;
+    if(syncing){
       const primaryTake=buildTake(roll,mode,null);
       const ref={scene:primaryTake.scene,shot:primaryTake.shot,take:primaryTake.take};
       const targets=syncTargetRolls();
@@ -5417,7 +5460,7 @@ function CameraReport(){
     const camHeaderColor=camCfg.header;
     // Light tint of the camera accent for the corner roll tag.
     const camRollTag={A:'#f3b0b0',B:'#b0c8f3',C:'#b0f3c8',D:'#f3d4b0'}[camOf(roll)]||'#f3b0b0';
-    const fcm=(v)=>{v=(v==null?'':String(v)).trim();if(!v)return '';return /^[\d.]+$/.test(v)?v+'cm':v;};
+    const fcm=(v)=>{v=(v==null?'':String(v)).trim();if(!v)return '';return /^[\d.]+$/.test(v)?v+"'":v;};
 
     const hasAnyPhoto=roll.takes.some(t=>(t.photoIds||[]).length>0);
     let photoMap={};
@@ -5501,13 +5544,13 @@ function CameraReport(){
       <col style="width:5%"/>    <!-- FILTER 2 (was ~7%) -->
       <col style="width:5%"/>    <!-- FILTER 3 -->
       <col style="width:4%"/>    <!-- WB -->
-      <col style="width:5%"/>    <!-- FOCUS (cm) -->
+      <col style="width:5%"/>    <!-- FOCUS (ft) -->
       <col/>                     <!-- NOTES takes remaining space -->
       ${hasAnyPhoto?'<col style="width:5%"/>':''}
     </colgroup>
     <thead><tr>
       <th>SCENE</th><th>SHOT</th><th>TAKE</th><th>T/S</th><th>CLIP</th><th>LENS</th><th>FOCAL</th><th>STOP</th><th>SHUTTER</th><th>EI</th>
-      <th>FILTER 1</th><th>FILTER 2</th><th>FILTER 3</th><th>WB</th><th>FOCUS<br/>(cm)</th><th>NOTES</th>${hasAnyPhoto?'<th>PHOTO</th>':''}
+      <th>FILTER 1</th><th>FILTER 2</th><th>FILTER 3</th><th>WB</th><th>FOCUS<br/>(ft)</th><th>NOTES</th>${hasAnyPhoto?'<th>PHOTO</th>':''}
     </tr></thead><tbody>${rows}</tbody></table>
     </div>
     </body></html>`;
@@ -5540,8 +5583,8 @@ function CameraReport(){
 
   function exportCSV(){
     if(!roll)return;
-    const head=['SCENE','SHOT','TAKE','T/S','CLIP','LENS','FOCAL','STOP','SHUTTER','EI','FILTER 1','FILTER 2','FILTER 3','WB','FOCUS (cm)','NOTES'];
-    const fcm=(v)=>{v=(v==null?'':String(v)).trim();if(!v)return '';return /^[\d.]+$/.test(v)?v+'cm':v;};
+    const head=['SCENE','SHOT','TAKE','T/S','CLIP','LENS','FOCAL','STOP','SHUTTER','EI','FILTER 1','FILTER 2','FILTER 3','WB',"FOCUS (ft)",'NOTES'];
+    const fcm=(v)=>{v=(v==null?'':String(v)).trim();if(!v)return '';return /^[\d.]+$/.test(v)?v+"'":v;};
     const esc=(v)=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
     const lines=[head.join(',')];
     roll.takes.forEach(t=>{
@@ -5628,7 +5671,8 @@ function CameraReport(){
         </div>
         {roll&&<button onClick={exportCSV} style={{padding:'4px 10px',borderRadius:5,fontSize:10,fontFamily:"'Geist Mono',monospace",background:'transparent',border:`1px solid ${T.border}`,color:T.textMute,cursor:'pointer'}}>CSV</button>}
         {roll&&<button disabled={exporting} onClick={async()=>{ setExporting(true); try{ await exportReport(); }finally{ setExporting(false); } }} style={{padding:'4px 10px',borderRadius:5,fontSize:10,fontFamily:"'Geist Mono',monospace",background:T.accent+'18',border:`1px solid ${T.accent}44`,color:T.accent,cursor:exporting?'default':'pointer',opacity:exporting?0.6:1}}>{exporting?'Preparing...':<>{'\uD83D\uDDA8'} Print / PDF</>}</button>}
-        <button onClick={()=>addRoll()} style={{padding:'4px 12px',borderRadius:5,fontSize:11,fontFamily:"'Geist Mono',monospace",background:CAM.accent,border:'none',color:'#0e0d0b',fontWeight:600,cursor:'pointer'}}>+ New Roll</button>
+        <button onClick={()=>addRoll(activeCam,'blank')} title="Start a completely fresh roll (blank fields)"
+          style={{padding:'4px 12px',borderRadius:5,fontSize:11,fontFamily:"'Geist Mono',monospace",background:CAM.accent,border:'none',color:'#0e0d0b',fontWeight:600,cursor:'pointer'}}>+ New Roll</button>
       </div>
 
       {/* Shoot Day filter — shows all unique shoot days across rolls */}
@@ -5701,7 +5745,7 @@ function CameraReport(){
                   ))}
                 </select>
             }
-            <button onClick={()=>addRoll()} title={'Add a new '+activeCam+' cam roll'}
+            <button onClick={()=>addRoll(activeCam,'continue')} title={'New '+activeCam+' cam roll — same day/date/crew/camera settings as the last roll'}
               style={{padding:'5px 10px',borderRadius:6,fontSize:10,fontFamily:"'Geist Mono',monospace",
                 background:CAM.tint,border:`1px solid ${CAM.accent}55`,color:CAM.accent,cursor:'pointer'}}>
               + Roll
@@ -5837,7 +5881,7 @@ function CameraReport(){
 
       {!roll&&!hasSearch&&<div style={{flex:1,display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:12,color:T.textDim}}>
         <div style={{fontSize:13}}>No camera rolls yet.</div>
-        <button onClick={()=>addRoll()} style={{padding:'8px 18px',borderRadius:6,background:T.accent,border:'none',color:'#0e0d0b',fontWeight:600,fontSize:12,cursor:'pointer'}}>+ Start a roll</button>
+        <button onClick={()=>addRoll(activeCam,'blank')} style={{padding:'8px 18px',borderRadius:6,background:T.accent,border:'none',color:'#0e0d0b',fontWeight:600,fontSize:12,cursor:'pointer'}}>+ Start a roll</button>
       </div>}
 
       {roll&&!(showSearch&&hasSearch)&&<div style={{flex:1,overflow:'auto',minHeight:0}}>
@@ -5971,7 +6015,7 @@ function CameraReport(){
               <th style={{...th,width:80,whiteSpace:'normal',lineHeight:1.15}}>SHUTTER</th>
               <th style={{...th,width:50}}>EI</th><th style={{...th,width:64}}>FILTER 1</th>
               <th style={{...th,width:80}}>FILTER 2</th><th style={{...th,width:70}}>FILTER 3</th><th style={{...th,width:76}}>WB</th>
-              <th style={{...th,width:46,whiteSpace:'normal',lineHeight:1.15,verticalAlign:'middle'}}>FOCUS<br/>(cm)</th>
+              <th style={{...th,width:46,whiteSpace:'normal',lineHeight:1.15,verticalAlign:'middle'}}>FOCUS<br/>(ft)</th>
               <th style={{...th,minWidth:180}}>NOTES</th><th style={{...th,width:44}}>{'\uD83D\uDCF7'}</th><th style={{...th,width:78}}></th>
             </tr></thead>
             <tbody>
@@ -6037,7 +6081,7 @@ function CameraReport(){
                   <td style={{borderRight:`1px solid ${T.rule}`}}><LensFocalPicker value={t.filters||''} onChange={v=>patchTake(t.id,{filters:v})} options={FILTER2_OPTIONS} inputStyle={cellInput}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.filters3||''} onChange={e=>patchTake(t.id,{filters3:e.target.value})} style={cellInput}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}><LensFocalPicker value={t.wb||''} onChange={v=>patchTake(t.id,{wb:v})} options={WB_OPTIONS} inputStyle={cellInput}/></td>
-                  <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.focus||''} placeholder="cm" onChange={e=>patchTake(t.id,{focus:e.target.value})} style={{...cellInput,padding:'8px 3px',textAlign:'center'}}/></td>
+                  <td style={{borderRight:`1px solid ${T.rule}`}}><input value={t.focus||''} placeholder="'" onChange={e=>patchTake(t.id,{focus:e.target.value})} style={{...cellInput,padding:'8px 3px',textAlign:'center'}}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`}}><NotesPicker value={t.notes||''} onChange={v=>patchTake(t.id,{notes:v})}/></td>
                   <td style={{borderRight:`1px solid ${T.rule}`,padding:'4px 2px'}}>
                     <TakePhotoCell projId={projId} take={t}
@@ -6065,19 +6109,57 @@ function CameraReport(){
           <button onClick={addTake} style={{padding:'7px 16px',borderRadius:6,border:`1px dashed ${CAM.accent}66`,background:CAM.tint,color:CAM.accent,fontSize:12,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>+ Add take</button>
           <button onClick={addShot} style={{padding:'7px 16px',borderRadius:6,border:`1px dashed ${T.border}`,background:'transparent',color:T.textMute,fontSize:12,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>+ New shot</button>
           <button onClick={addNewScene} style={{padding:'7px 16px',borderRadius:6,border:`1px dashed ${T.border}`,background:'transparent',color:T.textMute,fontSize:12,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>+ New scene</button>
-          {existingCams.length>1&&(
-            <button onClick={()=>setSyncCams(s=>!s)}
-              title="When on, Add take / New shot / New scene adds a matching row to every camera's current roll at once"
-              style={{display:'flex',alignItems:'center',gap:6,padding:'7px 12px',borderRadius:6,cursor:'pointer',
-                border:`1.5px solid ${syncCams?CAM.accent:T.border}`,
-                background:syncCams?CAM.tint:'transparent',
-                color:syncCams?CAM.accent:T.textDim,fontSize:11,fontFamily:"'Geist Mono',monospace"}}>
-              <span style={{width:15,height:15,borderRadius:3,display:'grid',placeItems:'center',fontSize:10,fontWeight:700,
-                background:syncCams?CAM.accent:'transparent',color:syncCams?'#0e0d0b':T.textDim,
-                border:`1px solid ${syncCams?CAM.accent:T.border}`}}>{syncCams?'\u2713':''}</span>
-              Sync cams ({existingCams.join('+')})
-            </button>
-          )}
+          {existingCams.length>1&&(()=>{
+            const active=syncCams.includes(activeCam)&&syncCams.length>1;
+            const label=syncCams.length>1?syncCams.join('+'):'off';
+            return(
+              <div style={{position:'relative'}}>
+                <button onClick={()=>setShowSyncMenu(v=>!v)}
+                  title="Choose which cameras add takes together (e.g. just A+B, or A+B+C)"
+                  style={{display:'flex',alignItems:'center',gap:6,padding:'7px 12px',borderRadius:6,cursor:'pointer',
+                    border:`1.5px solid ${active?CAM.accent:T.border}`,
+                    background:active?CAM.tint:'transparent',
+                    color:active?CAM.accent:T.textDim,fontSize:11,fontFamily:"'Geist Mono',monospace"}}>
+                  <span style={{width:15,height:15,borderRadius:3,display:'grid',placeItems:'center',fontSize:10,fontWeight:700,
+                    background:active?CAM.accent:'transparent',color:active?'#0e0d0b':T.textDim,
+                    border:`1px solid ${active?CAM.accent:T.border}`}}>{active?'\u2713':''}</span>
+                  Sync cams ({label}) {'\u25BE'}
+                </button>
+                {showSyncMenu&&(
+                  <>
+                    <div onClick={()=>setShowSyncMenu(false)} style={{position:'fixed',inset:0,zIndex:400}}/>
+                    <div style={{position:'absolute',bottom:'100%',left:0,marginBottom:4,zIndex:401,minWidth:160,
+                      background:T.panel,border:`1px solid ${T.border}`,borderRadius:7,boxShadow:'0 8px 24px rgba(0,0,0,0.5)',overflow:'hidden'}}>
+                      <div style={{padding:'6px 12px 4px',fontSize:8,fontFamily:"'Geist Mono',monospace",color:T.textDim,letterSpacing:'0.08em'}}>SYNC TOGETHER</div>
+                      {existingCams.map(c=>{
+                        const cfg=CAM_CONFIG[c];
+                        const on=syncCams.includes(c);
+                        return(
+                          <button key={c} onClick={()=>setSyncCams(prev=>on?prev.filter(x=>x!==c):[...prev,c])}
+                            style={{display:'flex',alignItems:'center',gap:8,width:'100%',textAlign:'left',padding:'8px 12px',
+                              background:on?cfg.tint:'transparent',border:'none',borderTop:`1px solid ${T.rule}`,
+                              color:on?cfg.accent:T.text,fontSize:12,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>
+                            <span style={{width:15,height:15,borderRadius:3,display:'grid',placeItems:'center',fontSize:10,fontWeight:700,
+                              background:on?cfg.accent:'transparent',color:on?'#0e0d0b':T.textDim,
+                              border:`1px solid ${on?cfg.accent:T.border}`}}>{on?'\u2713':''}</span>
+                            Cam {c}
+                          </button>
+                        );
+                      })}
+                      {syncCams.length>0&&(
+                        <button onClick={()=>setSyncCams([])}
+                          style={{display:'block',width:'100%',textAlign:'left',padding:'7px 12px',
+                            background:'transparent',border:'none',borderTop:`1px solid ${T.rule}`,
+                            color:T.textDim,fontSize:10,fontFamily:"'Geist Mono',monospace",cursor:'pointer'}}>
+                          Clear all
+                        </button>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+            );
+          })()}
           <div style={{flex:1}}/>
           <button onClick={resequenceClips} title="Renumber all clip names in sequence from the first one"
             style={{padding:'6px 12px',borderRadius:6,border:`1px solid ${T.border}`,background:'transparent',
