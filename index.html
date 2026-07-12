@@ -82,7 +82,7 @@ const LOC_COLORS=["#7ab6c4","#d49a5c","#c4654b","#7aa37a","#c9a14a","#a07bc4"];
 ═══════════════════════════════════════════════════════════ */
 const LANGS={
   en:{
-    cabinet:"Script Breaker",newVersion:"v12.19 · Frozen Table Header",importJson:"Import JSON",
+    cabinet:"Script Breaker",newVersion:"v12.20 · Sticky Header Fix (height chain)",importJson:"Import JSON",
     noProjects:"No projects yet",importFirst:"Import a JSON breakdown from Claude to get started",
     howItWorks:"How it works",
     step1t:"Analyse in Claude Project",step1d:"Upload screenplay PDF to a Claude Project. Ask Claude to output a full breakdown JSON.",
@@ -104,7 +104,7 @@ const LANGS={
     allLocations:"All locations",
   },
   zh:{
-    cabinet:"Script Breaker",newVersion:"v12.19 · 表格标题冻结",importJson:"导入JSON",
+    cabinet:"Script Breaker",newVersion:"v12.20 · 表头冻结修复",importJson:"导入JSON",
     noProjects:"暂无项目",importFirst:"从Claude导入JSON解构文件即可开始",
     howItWorks:"使用流程",
     step1t:"在Claude Project分析剧本",step1d:"上传剧本PDF至Claude Project，让Claude输出完整解构JSON。",
@@ -126,7 +126,7 @@ const LANGS={
     allLocations:"全部地点",
   },
   ja:{
-    cabinet:"Script Breaker",newVersion:"v12.19",importJson:"JSONインポート",
+    cabinet:"Script Breaker",newVersion:"v12.20",importJson:"JSONインポート",
     noProjects:"プロジェクトなし",importFirst:"ClaudeからJSONをインポートして開始",
     howItWorks:"使い方",
     step1t:"Claudeで脚本分析",step1d:"脚本PDFをClaudeプロジェクトにアップロード。完全なJSONを出力するよう依頼。",
@@ -5609,7 +5609,7 @@ function CameraReport(){
   const th={padding:'6px 5px',background:CAM.header,color:'#fff',fontSize:9,fontFamily:"'Geist Mono',monospace",letterSpacing:'0.05em',textAlign:'left',whiteSpace:'nowrap',position:'sticky',top:STICKY_TOP,zIndex:2};
 
   return(
-    <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden',border:`1px solid ${T.border}`,borderTop:'none',background:T.panel}}>
+    <div style={{flex:1,display:'flex',flexDirection:'column',minHeight:0,overflow:'hidden',border:`1px solid ${T.border}`,borderTop:'none',background:T.panel}}>
       {/* Toolbar */}
       <div style={{padding:mob?'8px 10px':'10px 16px',borderBottom:`1px solid ${T.rule}`,display:'flex',alignItems:'center',gap:8,flexShrink:0,flexWrap:'wrap'}}>
         <div style={{display:'flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:99,background:syncStatus==='live'?T.success+'18':T.surface2,border:`1px solid ${syncStatus==='live'?T.success+'44':T.border}`}}>
@@ -9069,7 +9069,7 @@ function Shell({initProj,onBack,lang,setLang,dark,setDark}){
               <div style={{fontFamily:"'Instrument Serif',serif",fontStyle:'italic',fontSize:26,color:T.text,whiteSpace:'nowrap'}}>{VIEWS.find(v=>v.id===view)?.label}</div>
               <Mono s={{color:T.textDim,fontSize:10}}>{proj.project?.totalPages||'?'}p{proj.project?.estimatedRuntime?' · '+proj.project.estimatedRuntime:''}</Mono>
             </div>}
-            <div style={{flex:1,overflow:'hidden'}}>
+            <div style={{flex:1,overflow:'hidden',minHeight:0}}>
               {view==='dashboard'&&<DashView/>}
               {view==='script'&&<ScriptView/>}
               {view==='shots'&&<ShotBoard/>}
